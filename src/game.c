@@ -1,5 +1,6 @@
 #include "game.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <string.h>
 
@@ -17,6 +18,7 @@ static const Color COLOR_PLAYFIELD = {6, 8, 13, 255};
 static const Color COLOR_GRID = {28, 35, 52, 255};
 static const Color COLOR_PLAYER = {236, 242, 248, 255};
 static const Color COLOR_PLAYER_ACCENT = {80, 224, 255, 255};
+static const Color COLOR_MISSILE = {255, 184, 96, 255};
 static const Color COLOR_RING = {255, 96, 132, 255};
 static const Color COLOR_AIMED = {97, 244, 226, 255};
 static const Color COLOR_WALL = {255, 228, 153, 255};
@@ -25,6 +27,161 @@ static const Color COLOR_SWEEP = {255, 122, 122, 255};
 static const Color COLOR_AIMER = {105, 232, 215, 255};
 static const Color COLOR_ORBIT = {250, 227, 143, 255};
 static const Color COLOR_BOSS = {232, 237, 244, 255};
+
+static const char *DifficultyLabel(Difficulty difficulty)
+{
+    switch (difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        return "CASUAL";
+    case DIFFICULTY_STANDARD:
+        return "STANDARD";
+    case DIFFICULTY_EXPERT:
+        return "EXPERT";
+    }
+
+    return "UNKNOWN";
+}
+
+static Color DifficultyColor(Difficulty difficulty)
+{
+    switch (difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        return COLOR_AIMED;
+    case DIFFICULTY_STANDARD:
+        return COLOR_PLAYER;
+    case DIFFICULTY_EXPERT:
+        return COLOR_RING;
+    }
+
+    return COLOR_PLAYER;
+}
+
+static float DifficultyBulletSpeedScale(const Game *game)
+{
+    switch (game->difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        return 0.84f;
+    case DIFFICULTY_STANDARD:
+        return 1.0f;
+    case DIFFICULTY_EXPERT:
+        return 1.16f;
+    }
+
+    return 1.0f;
+}
+
+static float DifficultyCooldownScale(const Game *game)
+{
+    switch (game->difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        return 1.18f;
+    case DIFFICULTY_STANDARD:
+        return 1.0f;
+    case DIFFICULTY_EXPERT:
+        return 0.88f;
+    }
+
+    return 1.0f;
+}
+
+static int DifficultyPatternCount(const Game *game, int base_count)
+{
+    int adjusted = base_count;
+
+    switch (game->difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        adjusted = base_count > 3 ? base_count - 2 : base_count - 1;
+        break;
+    case DIFFICULTY_STANDARD:
+        adjusted = base_count;
+        break;
+    case DIFFICULTY_EXPERT:
+        adjusted = base_count + 2;
+        break;
+    }
+
+    if (adjusted < 1)
+    {
+        adjusted = 1;
+    }
+
+    return adjusted;
+}
+
+static int DifficultyBossHp(const Game *game)
+{
+    switch (game->difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        return 240;
+    case DIFFICULTY_STANDARD:
+        return 320;
+    case DIFFICULTY_EXPERT:
+        return 400;
+    }
+
+    return 320;
+}
+
+static int DifficultyStartingLives(const Game *game)
+{
+    switch (game->difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        return 4;
+    case DIFFICULTY_STANDARD:
+        return 3;
+    case DIFFICULTY_EXPERT:
+        return 2;
+    }
+
+    return 3;
+}
+
+static int DifficultyStartingBombs(const Game *game)
+{
+    switch (game->difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        return 3;
+    case DIFFICULTY_STANDARD:
+        return 2;
+    case DIFFICULTY_EXPERT:
+        return 1;
+    }
+
+    return 2;
+}
+
+static float DifficultyMissileInterval(const Game *game)
+{
+    switch (game->difficulty)
+    {
+    case DIFFICULTY_CASUAL:
+        return 1.2f;
+    case DIFFICULTY_STANDARD:
+        return 1.45f;
+    case DIFFICULTY_EXPERT:
+        return 1.7f;
+    }
+
+    return 1.45f;
+}
+
+static void SetStatusMessage(Game *game, const char *message)
+{
+    strncpy(game->status_message, message, sizeof(game->status_message) - 1);
+    game->status_message[sizeof(game->status_message) - 1] = '\0';
+    game->status_timer = 2.5f;
+}
+
+static float ScaleEnemyCooldown(const Game *game, float base_cooldown);
+static void DestroyEnemy(Game *game, Enemy *enemy);
 
 static LogicVec2 ToLogic(Vector2 value)
 {
@@ -177,8 +334,9 @@ static Enemy *SpawnEnemy(Game *game, EnemyKind kind, Vector2 position, Vector2 v
     enemy->velocity = velocity;
     enemy->radius = radius;
     enemy->hp = hp;
-    enemy->cooldown = cooldown;
-    enemy->aux_cooldown = aux_cooldown;
+    enemy->max_hp = hp;
+    enemy->cooldown = ScaleEnemyCooldown(game, cooldown);
+    enemy->aux_cooldown = ScaleEnemyCooldown(game, aux_cooldown);
     enemy->age = 0.0f;
     enemy->phase_clock = 0.0f;
     enemy->anchor_x = position.x;
@@ -226,25 +384,43 @@ static void ClearEnemyBullets(Game *game)
     }
 }
 
+static void JumpToBoss(Game *game);
+
 static void ResetRun(Game *game)
 {
     Rectangle playfield = game->playfield;
+    Difficulty difficulty = game->difficulty;
+    bool debug_invulnerable = game->debug_invulnerable;
+    bool debug_infinite_lives = game->debug_infinite_lives;
+    bool debug_start_at_boss = game->debug_start_at_boss;
 
     memset(game, 0, sizeof(*game));
     game->playfield = playfield;
+    game->difficulty = difficulty;
+    game->debug_invulnerable = debug_invulnerable;
+    game->debug_infinite_lives = debug_infinite_lives;
+    game->debug_start_at_boss = debug_start_at_boss;
     game->mode = GAME_MODE_PLAYING;
     game->player.position = (Vector2){
         .x = playfield.x + playfield.width * 0.5f,
         .y = playfield.y + playfield.height - 88.0f,
     };
     game->player.alive = true;
-    game->player.invulnerable_timer = 1.5f;
-    game->player.lives = 3;
+    game->player.invulnerable_timer = 1.75f;
+    game->player.lives = DifficultyStartingLives(game);
+    game->player.bombs = DifficultyStartingBombs(game);
+    game->player.missile_timer = 0.35f;
+
+    if (game->debug_start_at_boss)
+    {
+        JumpToBoss(game);
+    }
 }
 
 void GameInit(Game *game)
 {
     memset(game, 0, sizeof(*game));
+    game->difficulty = DIFFICULTY_CASUAL;
     game->playfield = (Rectangle){
         .x = (float)PLAYFIELD_X,
         .y = (float)PLAYFIELD_Y,
@@ -257,14 +433,17 @@ void GameInit(Game *game)
         .y = game->playfield.y + game->playfield.height - 88.0f,
     };
     game->player.alive = true;
-    game->player.lives = 3;
+    game->player.lives = DifficultyStartingLives(game);
+    game->player.bombs = DifficultyStartingBombs(game);
 }
 
 static void EmitRing(Game *game, Vector2 position, float speed, int count, float start_angle,
                      BulletKind kind, float radius)
 {
     LogicVec2 velocities[32];
-    int emitted = LogicBuildRing(velocities, 32, count, start_angle, speed);
+    int scaled_count = DifficultyPatternCount(game, count);
+    float scaled_speed = speed * DifficultyBulletSpeedScale(game);
+    int emitted = LogicBuildRing(velocities, 32, scaled_count, start_angle, scaled_speed);
 
     for (int i = 0; i < emitted; ++i)
     {
@@ -276,8 +455,10 @@ static void EmitFan(Game *game, Vector2 position, Vector2 target, float speed, i
                     float spread, BulletKind kind, float radius)
 {
     LogicVec2 velocities[24];
-    int emitted = LogicBuildFanToward(velocities, 24, count, ToLogic(position), ToLogic(target),
-                                      spread, speed);
+    int scaled_count = DifficultyPatternCount(game, count);
+    float scaled_speed = speed * DifficultyBulletSpeedScale(game);
+    int emitted = LogicBuildFanToward(velocities, 24, scaled_count, ToLogic(position),
+                                      ToLogic(target), spread, scaled_speed);
 
     for (int i = 0; i < emitted; ++i)
     {
@@ -288,13 +469,16 @@ static void EmitFan(Game *game, Vector2 position, Vector2 target, float speed, i
 static void EmitCurtain(Game *game, Vector2 origin, float center_x, float width, float speed,
                         int count)
 {
-    for (int i = 0; i < count; ++i)
+    int scaled_count = DifficultyPatternCount(game, count);
+    float scaled_speed = speed * DifficultyBulletSpeedScale(game);
+
+    for (int i = 0; i < scaled_count; ++i)
     {
-        float t = count == 1 ? 0.5f : (float)i / (float)(count - 1);
+        float t = scaled_count == 1 ? 0.5f : (float)i / (float)(scaled_count - 1);
         float angle_offset = (t - 0.5f) * 0.55f;
         float x = center_x - width * 0.5f + width * t;
         Vector2 position = {x, origin.y};
-        Vector2 velocity = ToVector(LogicPolar((float)PI / 2.0f + angle_offset, speed));
+        Vector2 velocity = ToVector(LogicPolar((float)PI / 2.0f + angle_offset, scaled_speed));
         SpawnEnemyBullet(game, BULLET_WALL, position, velocity, 8.5f);
     }
 }
@@ -334,10 +518,11 @@ static void SpawnOrbiters(Game *game, float y)
 
 static void SpawnBoss(Game *game)
 {
+    int hp = DifficultyBossHp(game);
     Enemy *boss = SpawnEnemy(
         game, ENEMY_BOSS,
         (Vector2){game->playfield.x + game->playfield.width * 0.5f, game->playfield.y - 120.0f},
-        (Vector2){0.0f, 0.0f}, 46.0f, 320, 0.6f, 1.25f);
+        (Vector2){0.0f, 0.0f}, 46.0f, hp, 0.6f, 1.25f);
 
     if (boss != NULL)
     {
@@ -353,6 +538,18 @@ static void SpawnBoss(Game *game)
             }
         }
     }
+}
+
+static void JumpToBoss(Game *game)
+{
+    for (int i = 0; i < 5; ++i)
+    {
+        game->script_flags[i] = true;
+    }
+
+    game->stage_time = 22.1f;
+    SpawnBoss(game);
+    SetStatusMessage(game, "PHASE MODE: BOSS ENTRY");
 }
 
 static void RunStageScript(Game *game)
@@ -399,6 +596,136 @@ static void RunStageScript(Game *game)
     }
 }
 
+static float ScaleEnemyCooldown(const Game *game, float base_cooldown)
+{
+    return base_cooldown * DifficultyCooldownScale(game);
+}
+
+static int CountActiveMissiles(const Game *game)
+{
+    int active = 0;
+
+    for (int i = 0; i < MAX_PLAYER_BULLETS; ++i)
+    {
+        if (game->player_bullets[i].active && game->player_bullets[i].kind == BULLET_MISSILE)
+        {
+            active++;
+        }
+    }
+
+    return active;
+}
+
+static Enemy *FindNearestEnemy(Game *game, Vector2 position)
+{
+    Enemy *nearest = NULL;
+    float nearest_distance = 0.0f;
+
+    for (int i = 0; i < MAX_ENEMIES; ++i)
+    {
+        Enemy *enemy = &game->enemies[i];
+        float distance;
+
+        if (!enemy->active)
+        {
+            continue;
+        }
+
+        distance = LogicDistanceSquared(ToLogic(position), ToLogic(enemy->position));
+        if (nearest == NULL || distance < nearest_distance)
+        {
+            nearest = enemy;
+            nearest_distance = distance;
+        }
+    }
+
+    return nearest;
+}
+
+static void SpawnMissile(Game *game)
+{
+    Bullet *bullet;
+    Enemy *target;
+    Vector2 origin;
+    Vector2 initial_velocity;
+
+    if (CountActiveMissiles(game) >= 2)
+    {
+        return;
+    }
+
+    target = FindNearestEnemy(game, game->player.position);
+    if (target == NULL)
+    {
+        return;
+    }
+
+    bullet = ReserveBullet(game->player_bullets, MAX_PLAYER_BULLETS);
+    if (bullet == NULL)
+    {
+        return;
+    }
+
+    origin = (Vector2){game->player.position.x, game->player.position.y - 22.0f};
+    initial_velocity = ToVector(LogicPolar(-1.57079632679f, 430.0f));
+
+    bullet->active = true;
+    bullet->kind = BULLET_MISSILE;
+    bullet->position = origin;
+    bullet->velocity = initial_velocity;
+    bullet->radius = 7.0f;
+    bullet->age = 0.0f;
+    bullet->grazed = false;
+
+    SpawnParticle(game, origin, (Vector2){0.0f, 60.0f}, 4.0f, 0.22f, COLOR_MISSILE);
+}
+
+static void UseBomb(Game *game)
+{
+    if (!game->player.alive || game->player.bombs <= 0 || game->player.bomb_cooldown > 0.0f)
+    {
+        return;
+    }
+
+    game->player.bombs--;
+    game->player.bomb_cooldown = 0.35f;
+    if (game->player.invulnerable_timer < 1.4f)
+    {
+        game->player.invulnerable_timer = 1.4f;
+    }
+    game->score += 250;
+
+    ClearEnemyBullets(game);
+    SpawnBurst(game, game->player.position, COLOR_MISSILE, 28, 210.0f);
+
+    for (int i = 0; i < MAX_ENEMIES; ++i)
+    {
+        Enemy *enemy = &game->enemies[i];
+
+        if (!enemy->active)
+        {
+            continue;
+        }
+
+        if (enemy->kind == ENEMY_BOSS)
+        {
+            int bomb_damage = (int)LogicClamp((float)enemy->max_hp * 0.12f, 24.0f, 64.0f);
+
+            enemy->hp -= bomb_damage;
+            SpawnParticle(game, enemy->position, (Vector2){0.0f, -30.0f}, 7.0f, 0.35f,
+                          COLOR_MISSILE);
+            if (enemy->hp <= 0)
+            {
+                DestroyEnemy(game, enemy);
+            }
+        }
+        else
+        {
+            DestroyEnemy(game, enemy);
+        }
+    }
+}
+
 static void StartRespawn(Game *game)
 {
     game->player.alive = false;
@@ -409,13 +736,24 @@ static void StartRespawn(Game *game)
         .y = game->playfield.y + game->playfield.height - 88.0f,
     };
     game->player.shot_timer = 0.0f;
+    game->player.missile_timer = 0.35f;
+    game->player.bomb_cooldown = 0.0f;
     ClearEnemyBullets(game);
 }
 
 static void DamagePlayer(Game *game)
 {
+    if (game->debug_invulnerable)
+    {
+        return;
+    }
+
     SpawnBurst(game, game->player.position, COLOR_PLAYER_ACCENT, 18, 200.0f);
-    game->player.lives--;
+
+    if (!game->debug_infinite_lives)
+    {
+        game->player.lives--;
+    }
 
     if (game->player.lives <= 0)
     {
@@ -449,9 +787,19 @@ static void UpdatePlayer(Game *game, float dt)
         game->player.invulnerable_timer -= dt;
     }
 
+    if (game->player.bomb_cooldown > 0.0f)
+    {
+        game->player.bomb_cooldown -= dt;
+    }
+
     if (!game->player.alive)
     {
         return;
+    }
+
+    if (game->player.bombs > 0 && (IsKeyPressed(KEY_X) || IsKeyPressed(KEY_C)))
+    {
+        UseBomb(game);
     }
 
     if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))
@@ -482,6 +830,7 @@ static void UpdatePlayer(Game *game, float dt)
     game->player.position.y = ClampToPlayfieldY(game->player.position.y);
 
     game->player.shot_timer -= dt;
+    game->player.missile_timer -= dt;
     if (game->player.shot_timer <= 0.0f)
     {
         game->player.shot_timer += focus ? 0.08f : 0.09f;
@@ -510,6 +859,12 @@ static void UpdatePlayer(Game *game, float dt)
                 game, (Vector2){game->player.position.x + 12.0f, game->player.position.y - 14.0f},
                 (Vector2){70.0f, -720.0f});
         }
+    }
+
+    if (game->player.missile_timer <= 0.0f)
+    {
+        game->player.missile_timer += DifficultyMissileInterval(game);
+        SpawnMissile(game);
     }
 }
 
@@ -584,6 +939,22 @@ static void UpdatePlayerBullets(Game *game, float dt)
         }
 
         bullet->age += dt;
+
+        if (bullet->kind == BULLET_MISSILE)
+        {
+            Enemy *target = FindNearestEnemy(game, bullet->position);
+
+            if (target != NULL)
+            {
+                LogicVec2 desired =
+                    LogicNormalize(LogicSub(ToLogic(target->position), ToLogic(bullet->position)));
+                LogicVec2 current = LogicNormalize(ToLogic(bullet->velocity));
+                LogicVec2 steered = LogicNormalize(
+                    LogicAdd(LogicScale(current, 1.0f), LogicScale(desired, 6.0f * dt)));
+                bullet->velocity = ToVector(LogicScale(steered, 430.0f));
+            }
+        }
+
         bullet->position.x += bullet->velocity.x * dt;
         bullet->position.y += bullet->velocity.y * dt;
 
@@ -605,10 +976,26 @@ static void UpdatePlayerBullets(Game *game, float dt)
             if (LogicCircleOverlap(ToLogic(bullet->position), bullet->radius,
                                    ToLogic(enemy->position), enemy->radius))
             {
-                enemy->hp -= enemy->kind == ENEMY_BOSS ? 1 : 2;
+                int damage;
+
+                switch (bullet->kind)
+                {
+                case BULLET_PLAYER:
+                    damage = enemy->kind == ENEMY_BOSS ? 1 : 2;
+                    break;
+                case BULLET_MISSILE:
+                    damage = enemy->kind == ENEMY_BOSS ? 6 : 12;
+                    break;
+                default:
+                    damage = 1;
+                    break;
+                }
+
+                enemy->hp -= damage;
                 bullet->active = false;
-                SpawnParticle(game, bullet->position, (Vector2){0.0f, -45.0f}, 2.0f, 0.12f,
-                              COLOR_PLAYER);
+                SpawnParticle(game, bullet->position, (Vector2){0.0f, -45.0f},
+                              bullet->kind == BULLET_MISSILE ? 4.0f : 2.0f, 0.12f,
+                              bullet->kind == BULLET_MISSILE ? COLOR_MISSILE : COLOR_PLAYER);
 
                 if (enemy->hp <= 0)
                 {
@@ -728,7 +1115,7 @@ static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
         {
             EmitFan(game, enemy->position, game->player.position, 235.0f, 5, 1.0f, BULLET_RING,
                     7.0f);
-            enemy->cooldown = 1.15f;
+            enemy->cooldown = ScaleEnemyCooldown(game, 1.15f);
         }
 
         if (enemy->age > 8.0f)
@@ -746,7 +1133,7 @@ static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
         {
             EmitFan(game, enemy->position, game->player.position, 275.0f, 4, 0.72f, BULLET_AIMED,
                     6.5f);
-            enemy->cooldown = 1.0f;
+            enemy->cooldown = ScaleEnemyCooldown(game, 1.0f);
         }
 
         if (enemy->age > 7.0f)
@@ -763,7 +1150,7 @@ static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
         {
             EmitRing(game, enemy->position, 180.0f, 12, enemy->phase_clock * 0.8f, BULLET_WALL,
                      7.5f);
-            enemy->cooldown = 1.05f;
+            enemy->cooldown = ScaleEnemyCooldown(game, 1.05f);
         }
 
         if (enemy->age > 7.8f)
@@ -786,7 +1173,7 @@ static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
                          7.0f);
                 EmitRing(game, enemy->position, 270.0f, 9, -enemy->phase_clock * 0.85f,
                          BULLET_AIMED, 5.5f);
-                enemy->cooldown = 0.72f;
+                enemy->cooldown = ScaleEnemyCooldown(game, 0.72f);
             }
         }
         else if (enemy->hp > 120)
@@ -795,14 +1182,14 @@ static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
             {
                 EmitFan(game, enemy->position, game->player.position, 310.0f, 9, 1.35f,
                         BULLET_AIMED, 6.0f);
-                enemy->cooldown = 0.56f;
+                enemy->cooldown = ScaleEnemyCooldown(game, 0.56f);
             }
 
             if (enemy->aux_cooldown <= 0.0f)
             {
                 EmitCurtain(game, enemy->position, game->playfield.x + game->playfield.width * 0.5f,
                             game->playfield.width - 84.0f, 220.0f, 10);
-                enemy->aux_cooldown = 1.6f;
+                enemy->aux_cooldown = ScaleEnemyCooldown(game, 1.6f);
             }
         }
         else
@@ -817,14 +1204,14 @@ static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
                     SpawnEnemyBullet(game, BULLET_SPIRAL, enemy->position,
                                      ToVector(LogicPolar(-angle, 240.0f)), 6.5f);
                 }
-                enemy->cooldown = 0.09f;
+                enemy->cooldown = ScaleEnemyCooldown(game, 0.09f);
             }
 
             if (enemy->aux_cooldown <= 0.0f)
             {
                 EmitFan(game, enemy->position, game->player.position, 340.0f, 11, 1.7f, BULLET_WALL,
                         7.0f);
-                enemy->aux_cooldown = 1.05f;
+                enemy->aux_cooldown = ScaleEnemyCooldown(game, 1.05f);
             }
         }
         break;
@@ -849,18 +1236,123 @@ static void UpdateEnemies(Game *game, float dt)
     }
 }
 
+static bool CheatBufferEndsWith(const Game *game, const char *code)
+{
+    size_t code_length = strlen(code);
+
+    if ((size_t)game->cheat_length < code_length)
+    {
+        return false;
+    }
+
+    return memcmp(game->cheat_buffer + game->cheat_length - (int)code_length, code, code_length) ==
+           0;
+}
+
+static void UpdateTitleCheats(Game *game)
+{
+    int pressed = GetCharPressed();
+
+    while (pressed > 0)
+    {
+        if (isalpha(pressed))
+        {
+            if (game->cheat_length >= (int)sizeof(game->cheat_buffer) - 1)
+            {
+                memmove(game->cheat_buffer, game->cheat_buffer + 1, sizeof(game->cheat_buffer) - 2);
+                game->cheat_length = (int)sizeof(game->cheat_buffer) - 2;
+            }
+
+            game->cheat_buffer[game->cheat_length++] = (char)tolower(pressed);
+            game->cheat_buffer[game->cheat_length] = '\0';
+
+            if (CheatBufferEndsWith(game, "ghost"))
+            {
+                game->debug_invulnerable = !game->debug_invulnerable;
+                SetStatusMessage(game,
+                                 game->debug_invulnerable ? "CHEAT: GHOST ON" : "CHEAT: GHOST OFF");
+                game->cheat_length = 0;
+                game->cheat_buffer[0] = '\0';
+            }
+            else if (CheatBufferEndsWith(game, "eternal"))
+            {
+                game->debug_infinite_lives = !game->debug_infinite_lives;
+                SetStatusMessage(game, game->debug_infinite_lives ? "CHEAT: ETERNAL ON"
+                                                                  : "CHEAT: ETERNAL OFF");
+                game->cheat_length = 0;
+                game->cheat_buffer[0] = '\0';
+            }
+            else if (CheatBufferEndsWith(game, "phase"))
+            {
+                game->debug_start_at_boss = !game->debug_start_at_boss;
+                SetStatusMessage(game, game->debug_start_at_boss ? "CHEAT: PHASE ON"
+                                                                 : "CHEAT: PHASE OFF");
+                game->cheat_length = 0;
+                game->cheat_buffer[0] = '\0';
+            }
+        }
+
+        pressed = GetCharPressed();
+    }
+
+    if (IsKeyPressed(KEY_BACKSPACE) && game->cheat_length > 0)
+    {
+        game->cheat_length--;
+        game->cheat_buffer[game->cheat_length] = '\0';
+    }
+}
+
+static void UpdateTitle(Game *game)
+{
+    UpdateTitleCheats(game);
+
+    if (IsKeyPressed(KEY_ONE) || IsKeyPressed(KEY_KP_1))
+    {
+        game->difficulty = DIFFICULTY_CASUAL;
+        SetStatusMessage(game, "DIFFICULTY: CASUAL");
+    }
+    else if (IsKeyPressed(KEY_TWO) || IsKeyPressed(KEY_KP_2))
+    {
+        game->difficulty = DIFFICULTY_STANDARD;
+        SetStatusMessage(game, "DIFFICULTY: STANDARD");
+    }
+    else if (IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_KP_3))
+    {
+        game->difficulty = DIFFICULTY_EXPERT;
+        SetStatusMessage(game, "DIFFICULTY: EXPERT");
+    }
+
+    if (IsKeyPressed(KEY_LEFT))
+    {
+        game->difficulty =
+            (Difficulty)((game->difficulty + DIFFICULTY_EXPERT) % (DIFFICULTY_EXPERT + 1));
+        SetStatusMessage(game, TextFormat("DIFFICULTY: %s", DifficultyLabel(game->difficulty)));
+    }
+    else if (IsKeyPressed(KEY_RIGHT))
+    {
+        game->difficulty = (Difficulty)((game->difficulty + 1) % (DIFFICULTY_EXPERT + 1));
+        SetStatusMessage(game, TextFormat("DIFFICULTY: %s", DifficultyLabel(game->difficulty)));
+    }
+
+    if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE))
+    {
+        ResetRun(game);
+    }
+}
+
 void GameUpdate(Game *game, float dt)
 {
     dt = LogicClamp(dt, 0.0f, 1.0f / 30.0f);
     game->state_time += dt;
+    if (game->status_timer > 0.0f)
+    {
+        game->status_timer -= dt;
+    }
     UpdateParticles(game, dt);
 
     if (game->mode == GAME_MODE_TITLE)
     {
-        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE))
-        {
-            ResetRun(game);
-        }
+        UpdateTitle(game);
         return;
     }
 
@@ -1012,6 +1504,11 @@ static void DrawBullet(const Bullet *bullet)
                          (Vector2){2.5f, 9.0f}, rotation + 90.0f, COLOR_PLAYER);
         break;
 
+    case BULLET_MISSILE:
+        DrawPoly(bullet->position, 4, bullet->radius + 2.0f, rotation + 45.0f, COLOR_MISSILE);
+        DrawCircleV(bullet->position, 2.5f, COLOR_PLAYER);
+        break;
+
     case BULLET_RING:
         DrawCircleV(bullet->position, bullet->radius, COLOR_RING);
         DrawCircleLines((int)bullet->position.x, (int)bullet->position.y, bullet->radius + 1.0f,
@@ -1065,44 +1562,76 @@ static void DrawHud(const Game *game)
     DrawText("MOVE", left_x, 194, 18, ColorAlpha(COLOR_PLAYER, 0.6f));
     DrawText("SHIFT", left_x, 242, 20, COLOR_PLAYER);
     DrawText("FOCUS", left_x, 266, 18, ColorAlpha(COLOR_PLAYER, 0.6f));
-    DrawText("ENTER", left_x, 314, 20, COLOR_PLAYER);
-    DrawText("START / RESTART", left_x, 338, 18, ColorAlpha(COLOR_PLAYER, 0.6f));
+    DrawText("X / C", left_x, 314, 20, COLOR_PLAYER);
+    DrawText("BOMB", left_x, 338, 18, ColorAlpha(COLOR_PLAYER, 0.6f));
+    DrawText("ENTER", left_x, 362, 20, COLOR_PLAYER);
+    DrawText("START / RESTART", left_x, 386, 18, ColorAlpha(COLOR_PLAYER, 0.6f));
 
     DrawText("SCORE", right_x, 64, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
     DrawText(TextFormat("%08u", game->score), right_x, 92, 34, COLOR_PLAYER);
-    DrawText("LIVES", right_x, 176, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
+    DrawText("MODE", right_x, 146, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
+    DrawText(DifficultyLabel(game->difficulty), right_x, 172, 24,
+             DifficultyColor(game->difficulty));
+    DrawText("LIVES", right_x, 220, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
 
     for (int i = 0; i < game->player.lives; ++i)
     {
-        DrawPoly((Vector2){(float)right_x + 18.0f + (float)i * 28.0f, 220.0f}, 4, 10.0f, 45.0f,
+        DrawPoly((Vector2){(float)right_x + 18.0f + (float)i * 28.0f, 264.0f}, 4, 10.0f, 45.0f,
                  COLOR_PLAYER_ACCENT);
     }
 
-    DrawText("STAGE", right_x, 286, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
+    DrawText("BOMBS", right_x, 308, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
+    for (int i = 0; i < game->player.bombs; ++i)
+    {
+        DrawCircleV((Vector2){(float)right_x + 18.0f + (float)i * 28.0f, 350.0f}, 9.0f,
+                    COLOR_MISSILE);
+    }
+
+    DrawText("STAGE", right_x, 392, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
     if (!game->boss_spawned)
     {
-        DrawText("ONE", right_x, 314, 30, COLOR_PLAYER);
-        DrawText(TextFormat("%04.1fs", game->stage_time), right_x, 352, 24,
+        DrawText("ONE", right_x, 420, 30, COLOR_PLAYER);
+        DrawText(TextFormat("%04.1fs", game->stage_time), right_x, 458, 24,
                  ColorAlpha(COLOR_PLAYER, 0.7f));
     }
     else if (!game->boss_defeated)
     {
-        DrawText("BOSS", right_x, 314, 30, COLOR_SPIRAL);
+        DrawText("BOSS", right_x, 420, 30, COLOR_SPIRAL);
     }
     else
     {
-        DrawText("CLEAR", right_x, 314, 30, COLOR_AIMED);
+        DrawText("CLEAR", right_x, 420, 30, COLOR_AIMED);
     }
 
     if (boss != NULL)
     {
-        float ratio = LogicClamp((float)boss->hp / 320.0f, 0.0f, 1.0f);
-        Rectangle frame = {(float)right_x, 392.0f, 208.0f, 16.0f};
-        DrawText("CORE", right_x, 420, 18, ColorAlpha(COLOR_PLAYER, 0.7f));
+        float ratio = LogicClamp((float)boss->hp / (float)boss->max_hp, 0.0f, 1.0f);
+        Rectangle frame = {(float)right_x, 510.0f, 208.0f, 16.0f};
+        DrawText("CORE", right_x, 538, 18, ColorAlpha(COLOR_PLAYER, 0.7f));
         DrawRectangleRec(frame, COLOR_GRID);
         DrawRectangle((int)frame.x + 2, (int)frame.y + 2, (int)((frame.width - 4.0f) * ratio),
                       (int)frame.height - 4, COLOR_BOSS);
         DrawRectangleLinesEx(frame, 2.0f, COLOR_PANEL_LINE);
+    }
+
+    if (game->debug_invulnerable || game->debug_infinite_lives || game->debug_start_at_boss)
+    {
+        int debug_y = 584;
+        DrawText("DEBUG", right_x, debug_y, 18, ColorAlpha(COLOR_PLAYER, 0.7f));
+        if (game->debug_invulnerable)
+        {
+            DrawText("GHOST", right_x, debug_y + 28, 18, COLOR_AIMED);
+            debug_y += 28;
+        }
+        if (game->debug_infinite_lives)
+        {
+            DrawText("ETERNAL", right_x, debug_y + 28, 18, COLOR_PLAYER_ACCENT);
+            debug_y += 28;
+        }
+        if (game->debug_start_at_boss)
+        {
+            DrawText("PHASE", right_x, debug_y + 28, 18, COLOR_MISSILE);
+        }
     }
 }
 
@@ -1112,12 +1641,23 @@ static void DrawTitleOverlay(const Game *game)
     Color text_color = ColorAlpha(COLOR_PLAYER, 0.8f + 0.2f * pulse);
 
     DrawRectangle((int)game->playfield.x + 48, (int)game->playfield.y + 210, PLAYFIELD_WIDTH - 96,
-                  220, Fade(COLOR_PANEL, 0.78f));
+                  348, Fade(COLOR_PANEL, 0.78f));
     DrawText("ABSTRACT MINIMALIST", PLAYFIELD_X + 88, PLAYFIELD_Y + 250, 20, COLOR_PLAYER_ACCENT);
     DrawText("VERTICAL BULLET HELL", PLAYFIELD_X + 88, PLAYFIELD_Y + 282, 36, text_color);
     DrawText("graze bullets / survive the stage / break the core", PLAYFIELD_X + 88,
              PLAYFIELD_Y + 334, 22, ColorAlpha(COLOR_PLAYER, 0.65f));
-    DrawText("PRESS ENTER", PLAYFIELD_X + 88, PLAYFIELD_Y + 388, 28, text_color);
+    DrawText("DIFFICULTY", PLAYFIELD_X + 88, PLAYFIELD_Y + 390, 20,
+             ColorAlpha(COLOR_PLAYER, 0.65f));
+    DrawText("[1] CASUAL  [2] STANDARD  [3] EXPERT", PLAYFIELD_X + 88, PLAYFIELD_Y + 418, 24,
+             COLOR_PLAYER);
+    DrawText(TextFormat("CURRENT: %s", DifficultyLabel(game->difficulty)), PLAYFIELD_X + 88,
+             PLAYFIELD_Y + 452, 24, DifficultyColor(game->difficulty));
+    DrawText("PRESS ENTER", PLAYFIELD_X + 88, PLAYFIELD_Y + 496, 28, text_color);
+
+    if (game->debug_invulnerable || game->debug_infinite_lives || game->debug_start_at_boss)
+    {
+        DrawText("DEBUG MODIFIERS ACTIVE", PLAYFIELD_X + 88, PLAYFIELD_Y + 534, 18, COLOR_MISSILE);
+    }
 }
 
 static void DrawEndOverlay(const Game *game, const char *headline, Color color)
@@ -1174,5 +1714,13 @@ void GameDraw(const Game *game)
     else if (game->mode == GAME_MODE_CLEAR)
     {
         DrawEndOverlay(game, "AXIOM SHATTERED", COLOR_AIMED);
+    }
+
+    if (game->status_timer > 0.0f && game->status_message[0] != '\0')
+    {
+        DrawRectangle(PLAYFIELD_X + 90, PLAYFIELD_Y + PLAYFIELD_HEIGHT - 76, PLAYFIELD_WIDTH - 180,
+                      38, Fade(COLOR_PANEL, 0.84f));
+        DrawText(game->status_message, PLAYFIELD_X + 108, PLAYFIELD_Y + PLAYFIELD_HEIGHT - 68, 20,
+                 COLOR_PLAYER);
     }
 }

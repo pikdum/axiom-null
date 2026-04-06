@@ -36,19 +36,30 @@ typedef enum EnemyKind
 typedef enum BulletKind
 {
     BULLET_PLAYER = 0,
+    BULLET_MISSILE,
     BULLET_RING,
     BULLET_AIMED,
     BULLET_WALL,
     BULLET_SPIRAL
 } BulletKind;
 
+typedef enum Difficulty
+{
+    DIFFICULTY_CASUAL = 0,
+    DIFFICULTY_STANDARD,
+    DIFFICULTY_EXPERT
+} Difficulty;
+
 typedef struct Player
 {
     Vector2 position;
     float shot_timer;
+    float missile_timer;
     float respawn_timer;
     float invulnerable_timer;
+    float bomb_cooldown;
     int lives;
+    int bombs;
     bool alive;
 } Player;
 
@@ -60,6 +71,7 @@ typedef struct Enemy
     Vector2 velocity;
     float radius;
     int hp;
+    int max_hp;
     float cooldown;
     float aux_cooldown;
     float age;
@@ -92,6 +104,7 @@ typedef struct Particle
 typedef struct Game
 {
     GameMode mode;
+    Difficulty difficulty;
     Rectangle playfield;
     Player player;
     Enemy enemies[MAX_ENEMIES];
@@ -101,10 +114,17 @@ typedef struct Game
     bool script_flags[16];
     bool boss_spawned;
     bool boss_defeated;
+    bool debug_invulnerable;
+    bool debug_infinite_lives;
+    bool debug_start_at_boss;
     unsigned int score;
     float stage_time;
     float state_time;
     float clear_timer;
+    float status_timer;
+    char status_message[64];
+    char cheat_buffer[32];
+    int cheat_length;
 } Game;
 
 void GameInit(Game *game);
