@@ -1,0 +1,12 @@
+Checks: >
+  -*,
+  bugprone-branch-clone,
+  bugprone-integer-division,
+  clang-analyzer-core.*,
+  clang-analyzer-deadcode.*,
+  clang-analyzer-nullability.*,
+  clang-analyzer-unix.*,
+  readability-braces-around-statements
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(include|src|tests)/'
+FormatStyle: none

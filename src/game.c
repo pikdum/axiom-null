@@ -1,0 +1,1178 @@
+#include "game.h"
+
+#include <math.h>
+#include <string.h>
+
+#include "logic.h"
+
+static const float TAU = 6.28318530717958647692f;
+static const float PLAYER_RADIUS = 10.0f;
+static const float PLAYER_HITBOX_RADIUS = 3.5f;
+static const float PLAYER_GRAZE_RADIUS = 22.0f;
+
+static const Color COLOR_BG = {10, 12, 18, 255};
+static const Color COLOR_PANEL = {17, 20, 29, 255};
+static const Color COLOR_PANEL_LINE = {50, 60, 92, 255};
+static const Color COLOR_PLAYFIELD = {6, 8, 13, 255};
+static const Color COLOR_GRID = {28, 35, 52, 255};
+static const Color COLOR_PLAYER = {236, 242, 248, 255};
+static const Color COLOR_PLAYER_ACCENT = {80, 224, 255, 255};
+static const Color COLOR_RING = {255, 96, 132, 255};
+static const Color COLOR_AIMED = {97, 244, 226, 255};
+static const Color COLOR_WALL = {255, 228, 153, 255};
+static const Color COLOR_SPIRAL = {187, 120, 255, 255};
+static const Color COLOR_SWEEP = {255, 122, 122, 255};
+static const Color COLOR_AIMER = {105, 232, 215, 255};
+static const Color COLOR_ORBIT = {250, 227, 143, 255};
+static const Color COLOR_BOSS = {232, 237, 244, 255};
+
+static LogicVec2 ToLogic(Vector2 value)
+{
+    return (LogicVec2){
+        .x = value.x,
+        .y = value.y,
+    };
+}
+
+static Vector2 ToVector(LogicVec2 value)
+{
+    return (Vector2){
+        .x = value.x,
+        .y = value.y,
+    };
+}
+
+static float RandomUnit(void) { return (float)GetRandomValue(-1000, 1000) / 1000.0f; }
+
+static float ClampToPlayfieldX(float value)
+{
+    return LogicClamp(value, (float)PLAYFIELD_X + 18.0f,
+                      (float)(PLAYFIELD_X + PLAYFIELD_WIDTH) - 18.0f);
+}
+
+static float ClampToPlayfieldY(float value)
+{
+    return LogicClamp(value, (float)PLAYFIELD_Y + 18.0f,
+                      (float)(PLAYFIELD_Y + PLAYFIELD_HEIGHT) - 18.0f);
+}
+
+static bool IsInsideExtendedPlayfield(Vector2 position, float padding)
+{
+    return position.x >= (float)PLAYFIELD_X - padding &&
+           position.x <= (float)(PLAYFIELD_X + PLAYFIELD_WIDTH) + padding &&
+           position.y >= (float)PLAYFIELD_Y - padding &&
+           position.y <= (float)(PLAYFIELD_Y + PLAYFIELD_HEIGHT) + padding;
+}
+
+static void SpawnParticle(Game *game, Vector2 position, Vector2 velocity, float radius,
+                          float lifetime, Color color)
+{
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        Particle *particle = &game->particles[i];
+
+        if (!particle->active)
+        {
+            particle->active = true;
+            particle->position = position;
+            particle->velocity = velocity;
+            particle->radius = radius;
+            particle->age = 0.0f;
+            particle->lifetime = lifetime;
+            particle->color = color;
+            return;
+        }
+    }
+}
+
+static void SpawnBurst(Game *game, Vector2 position, Color color, int count, float speed)
+{
+    for (int i = 0; i < count; ++i)
+    {
+        float angle = ((float)i / (float)count) * TAU + RandomUnit() * 0.3f;
+        float magnitude = speed * (0.45f + 0.55f * (0.5f + RandomUnit() * 0.5f));
+        Vector2 velocity = ToVector(LogicPolar(angle, magnitude));
+
+        SpawnParticle(game, position, velocity, 2.0f + (float)(i % 3),
+                      0.28f + 0.18f * (float)(i % 4), color);
+    }
+}
+
+static Bullet *ReserveBullet(Bullet *bullets, int count)
+{
+    for (int i = 0; i < count; ++i)
+    {
+        if (!bullets[i].active)
+        {
+            return &bullets[i];
+        }
+    }
+
+    return NULL;
+}
+
+static Enemy *ReserveEnemy(Game *game)
+{
+    for (int i = 0; i < MAX_ENEMIES; ++i)
+    {
+        if (!game->enemies[i].active)
+        {
+            return &game->enemies[i];
+        }
+    }
+
+    return NULL;
+}
+
+static void SpawnPlayerBullet(Game *game, Vector2 position, Vector2 velocity)
+{
+    Bullet *bullet = ReserveBullet(game->player_bullets, MAX_PLAYER_BULLETS);
+
+    if (bullet == NULL)
+    {
+        return;
+    }
+
+    bullet->active = true;
+    bullet->kind = BULLET_PLAYER;
+    bullet->position = position;
+    bullet->velocity = velocity;
+    bullet->radius = 4.0f;
+    bullet->age = 0.0f;
+    bullet->grazed = false;
+}
+
+static void SpawnEnemyBullet(Game *game, BulletKind kind, Vector2 position, Vector2 velocity,
+                             float radius)
+{
+    Bullet *bullet = ReserveBullet(game->enemy_bullets, MAX_ENEMY_BULLETS);
+
+    if (bullet == NULL)
+    {
+        return;
+    }
+
+    bullet->active = true;
+    bullet->kind = kind;
+    bullet->position = position;
+    bullet->velocity = velocity;
+    bullet->radius = radius;
+    bullet->age = 0.0f;
+    bullet->grazed = false;
+}
+
+static Enemy *SpawnEnemy(Game *game, EnemyKind kind, Vector2 position, Vector2 velocity,
+                         float radius, int hp, float cooldown, float aux_cooldown)
+{
+    Enemy *enemy = ReserveEnemy(game);
+
+    if (enemy == NULL)
+    {
+        return NULL;
+    }
+
+    enemy->active = true;
+    enemy->kind = kind;
+    enemy->position = position;
+    enemy->velocity = velocity;
+    enemy->radius = radius;
+    enemy->hp = hp;
+    enemy->cooldown = cooldown;
+    enemy->aux_cooldown = aux_cooldown;
+    enemy->age = 0.0f;
+    enemy->phase_clock = 0.0f;
+    enemy->anchor_x = position.x;
+
+    return enemy;
+}
+
+static Enemy *FindBoss(Game *game)
+{
+    for (int i = 0; i < MAX_ENEMIES; ++i)
+    {
+        if (game->enemies[i].active && game->enemies[i].kind == ENEMY_BOSS)
+        {
+            return &game->enemies[i];
+        }
+    }
+
+    return NULL;
+}
+
+static const Enemy *FindBossConst(const Game *game)
+{
+    for (int i = 0; i < MAX_ENEMIES; ++i)
+    {
+        if (game->enemies[i].active && game->enemies[i].kind == ENEMY_BOSS)
+        {
+            return &game->enemies[i];
+        }
+    }
+
+    return NULL;
+}
+
+static void ClearEnemyBullets(Game *game)
+{
+    for (int i = 0; i < MAX_ENEMY_BULLETS; ++i)
+    {
+        if (game->enemy_bullets[i].active)
+        {
+            SpawnParticle(game, game->enemy_bullets[i].position, (Vector2){0.0f, -30.0f}, 2.0f,
+                          0.15f, ColorAlpha(COLOR_PANEL_LINE, 0.6f));
+        }
+
+        game->enemy_bullets[i].active = false;
+    }
+}
+
+static void ResetRun(Game *game)
+{
+    Rectangle playfield = game->playfield;
+
+    memset(game, 0, sizeof(*game));
+    game->playfield = playfield;
+    game->mode = GAME_MODE_PLAYING;
+    game->player.position = (Vector2){
+        .x = playfield.x + playfield.width * 0.5f,
+        .y = playfield.y + playfield.height - 88.0f,
+    };
+    game->player.alive = true;
+    game->player.invulnerable_timer = 1.5f;
+    game->player.lives = 3;
+}
+
+void GameInit(Game *game)
+{
+    memset(game, 0, sizeof(*game));
+    game->playfield = (Rectangle){
+        .x = (float)PLAYFIELD_X,
+        .y = (float)PLAYFIELD_Y,
+        .width = (float)PLAYFIELD_WIDTH,
+        .height = (float)PLAYFIELD_HEIGHT,
+    };
+    game->mode = GAME_MODE_TITLE;
+    game->player.position = (Vector2){
+        .x = game->playfield.x + game->playfield.width * 0.5f,
+        .y = game->playfield.y + game->playfield.height - 88.0f,
+    };
+    game->player.alive = true;
+    game->player.lives = 3;
+}
+
+static void EmitRing(Game *game, Vector2 position, float speed, int count, float start_angle,
+                     BulletKind kind, float radius)
+{
+    LogicVec2 velocities[32];
+    int emitted = LogicBuildRing(velocities, 32, count, start_angle, speed);
+
+    for (int i = 0; i < emitted; ++i)
+    {
+        SpawnEnemyBullet(game, kind, position, ToVector(velocities[i]), radius);
+    }
+}
+
+static void EmitFan(Game *game, Vector2 position, Vector2 target, float speed, int count,
+                    float spread, BulletKind kind, float radius)
+{
+    LogicVec2 velocities[24];
+    int emitted = LogicBuildFanToward(velocities, 24, count, ToLogic(position), ToLogic(target),
+                                      spread, speed);
+
+    for (int i = 0; i < emitted; ++i)
+    {
+        SpawnEnemyBullet(game, kind, position, ToVector(velocities[i]), radius);
+    }
+}
+
+static void EmitCurtain(Game *game, Vector2 origin, float center_x, float width, float speed,
+                        int count)
+{
+    for (int i = 0; i < count; ++i)
+    {
+        float t = count == 1 ? 0.5f : (float)i / (float)(count - 1);
+        float angle_offset = (t - 0.5f) * 0.55f;
+        float x = center_x - width * 0.5f + width * t;
+        Vector2 position = {x, origin.y};
+        Vector2 velocity = ToVector(LogicPolar((float)PI / 2.0f + angle_offset, speed));
+        SpawnEnemyBullet(game, BULLET_WALL, position, velocity, 8.5f);
+    }
+}
+
+static void SpawnSweepRow(Game *game, int count, float y, float speed, bool mirrored)
+{
+    for (int i = 0; i < count; ++i)
+    {
+        float t = count == 1 ? 0.5f : (float)i / (float)(count - 1);
+        float x = game->playfield.x + 50.0f + (game->playfield.width - 100.0f) * t;
+        float direction = (i % 2 == 0) ? 1.0f : -1.0f;
+        float vx = direction * (mirrored ? 90.0f : 50.0f);
+        Vector2 velocity = {vx, speed};
+
+        SpawnEnemy(game, ENEMY_SWEEP, (Vector2){x, y}, velocity, 18.0f, 16,
+                   0.65f + 0.08f * (float)i, 0.0f);
+    }
+}
+
+static void SpawnAimerPair(Game *game, float y, float horizontal_speed)
+{
+    SpawnEnemy(game, ENEMY_AIMER, (Vector2){game->playfield.x + 120.0f, y},
+               (Vector2){horizontal_speed, 52.0f}, 20.0f, 26, 1.0f, 0.0f);
+    SpawnEnemy(game, ENEMY_AIMER,
+               (Vector2){game->playfield.x + game->playfield.width - 120.0f, y - 30.0f},
+               (Vector2){-horizontal_speed, 52.0f}, 20.0f, 26, 1.2f, 0.0f);
+}
+
+static void SpawnOrbiters(Game *game, float y)
+{
+    SpawnEnemy(game, ENEMY_ORBITER, (Vector2){game->playfield.x + 150.0f, y},
+               (Vector2){0.0f, 42.0f}, 22.0f, 32, 0.75f, 0.0f);
+    SpawnEnemy(game, ENEMY_ORBITER,
+               (Vector2){game->playfield.x + game->playfield.width - 150.0f, y - 45.0f},
+               (Vector2){0.0f, 42.0f}, 22.0f, 32, 1.1f, 1.1f);
+}
+
+static void SpawnBoss(Game *game)
+{
+    Enemy *boss = SpawnEnemy(
+        game, ENEMY_BOSS,
+        (Vector2){game->playfield.x + game->playfield.width * 0.5f, game->playfield.y - 120.0f},
+        (Vector2){0.0f, 0.0f}, 46.0f, 320, 0.6f, 1.25f);
+
+    if (boss != NULL)
+    {
+        game->boss_spawned = true;
+        ClearEnemyBullets(game);
+
+        for (int i = 0; i < MAX_ENEMIES; ++i)
+        {
+            if (game->enemies[i].active && game->enemies[i].kind != ENEMY_BOSS)
+            {
+                SpawnBurst(game, game->enemies[i].position, COLOR_PANEL_LINE, 6, 120.0f);
+                game->enemies[i].active = false;
+            }
+        }
+    }
+}
+
+static void RunStageScript(Game *game)
+{
+    if (!game->script_flags[0] && game->stage_time > 0.8f)
+    {
+        game->script_flags[0] = true;
+        SpawnSweepRow(game, 5, game->playfield.y - 20.0f, 82.0f, false);
+    }
+
+    if (!game->script_flags[1] && game->stage_time > 4.6f)
+    {
+        game->script_flags[1] = true;
+        SpawnAimerPair(game, game->playfield.y - 10.0f, 42.0f);
+    }
+
+    if (!game->script_flags[2] && game->stage_time > 8.2f)
+    {
+        game->script_flags[2] = true;
+        SpawnOrbiters(game, game->playfield.y - 40.0f);
+    }
+
+    if (!game->script_flags[3] && game->stage_time > 12.4f)
+    {
+        game->script_flags[3] = true;
+        SpawnSweepRow(game, 6, game->playfield.y - 30.0f, 105.0f, true);
+        SpawnEnemy(
+            game, ENEMY_AIMER,
+            (Vector2){game->playfield.x + game->playfield.width * 0.5f, game->playfield.y - 60.0f},
+            (Vector2){0.0f, 64.0f}, 20.0f, 34, 1.0f, 0.0f);
+    }
+
+    if (!game->script_flags[4] && game->stage_time > 17.0f)
+    {
+        game->script_flags[4] = true;
+        SpawnAimerPair(game, game->playfield.y - 20.0f, 58.0f);
+        SpawnSweepRow(game, 4, game->playfield.y - 20.0f, 128.0f, false);
+    }
+
+    if (!game->script_flags[5] && game->stage_time > 22.0f)
+    {
+        game->script_flags[5] = true;
+        SpawnBoss(game);
+    }
+}
+
+static void StartRespawn(Game *game)
+{
+    game->player.alive = false;
+    game->player.respawn_timer = 1.0f;
+    game->player.invulnerable_timer = 2.2f;
+    game->player.position = (Vector2){
+        .x = game->playfield.x + game->playfield.width * 0.5f,
+        .y = game->playfield.y + game->playfield.height - 88.0f,
+    };
+    game->player.shot_timer = 0.0f;
+    ClearEnemyBullets(game);
+}
+
+static void DamagePlayer(Game *game)
+{
+    SpawnBurst(game, game->player.position, COLOR_PLAYER_ACCENT, 18, 200.0f);
+    game->player.lives--;
+
+    if (game->player.lives <= 0)
+    {
+        game->mode = GAME_MODE_GAME_OVER;
+        game->state_time = 0.0f;
+        game->player.alive = false;
+        return;
+    }
+
+    StartRespawn(game);
+}
+
+static void UpdatePlayer(Game *game, float dt)
+{
+    Vector2 move = {0.0f, 0.0f};
+    bool focus = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    float speed = focus ? 220.0f : 360.0f;
+
+    if (!game->player.alive)
+    {
+        game->player.respawn_timer -= dt;
+
+        if (game->player.respawn_timer <= 0.0f)
+        {
+            game->player.alive = true;
+        }
+    }
+
+    if (game->player.invulnerable_timer > 0.0f)
+    {
+        game->player.invulnerable_timer -= dt;
+    }
+
+    if (!game->player.alive)
+    {
+        return;
+    }
+
+    if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))
+    {
+        move.y -= 1.0f;
+    }
+    if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))
+    {
+        move.y += 1.0f;
+    }
+    if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))
+    {
+        move.x -= 1.0f;
+    }
+    if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT))
+    {
+        move.x += 1.0f;
+    }
+
+    if (move.x != 0.0f || move.y != 0.0f)
+    {
+        LogicVec2 normalized = LogicNormalize(ToLogic(move));
+        game->player.position.x += normalized.x * speed * dt;
+        game->player.position.y += normalized.y * speed * dt;
+    }
+
+    game->player.position.x = ClampToPlayfieldX(game->player.position.x);
+    game->player.position.y = ClampToPlayfieldY(game->player.position.y);
+
+    game->player.shot_timer -= dt;
+    if (game->player.shot_timer <= 0.0f)
+    {
+        game->player.shot_timer += focus ? 0.08f : 0.09f;
+
+        if (focus)
+        {
+            SpawnPlayerBullet(
+                game, (Vector2){game->player.position.x - 8.0f, game->player.position.y - 14.0f},
+                (Vector2){0.0f, -760.0f});
+            SpawnPlayerBullet(game,
+                              (Vector2){game->player.position.x, game->player.position.y - 18.0f},
+                              (Vector2){0.0f, -800.0f});
+            SpawnPlayerBullet(
+                game, (Vector2){game->player.position.x + 8.0f, game->player.position.y - 14.0f},
+                (Vector2){0.0f, -760.0f});
+        }
+        else
+        {
+            SpawnPlayerBullet(
+                game, (Vector2){game->player.position.x - 12.0f, game->player.position.y - 14.0f},
+                (Vector2){-70.0f, -720.0f});
+            SpawnPlayerBullet(game,
+                              (Vector2){game->player.position.x, game->player.position.y - 18.0f},
+                              (Vector2){0.0f, -760.0f});
+            SpawnPlayerBullet(
+                game, (Vector2){game->player.position.x + 12.0f, game->player.position.y - 14.0f},
+                (Vector2){70.0f, -720.0f});
+        }
+    }
+}
+
+static void UpdateParticles(Game *game, float dt)
+{
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        Particle *particle = &game->particles[i];
+
+        if (!particle->active)
+        {
+            continue;
+        }
+
+        particle->age += dt;
+        if (particle->age >= particle->lifetime)
+        {
+            particle->active = false;
+            continue;
+        }
+
+        particle->position.x += particle->velocity.x * dt;
+        particle->position.y += particle->velocity.y * dt;
+        particle->velocity.x *= 0.985f;
+        particle->velocity.y *= 0.985f;
+    }
+}
+
+static void DestroyEnemy(Game *game, Enemy *enemy)
+{
+    Color color = COLOR_SWEEP;
+    unsigned int reward = 100;
+
+    switch (enemy->kind)
+    {
+    case ENEMY_SWEEP:
+        color = COLOR_SWEEP;
+        reward = 100;
+        break;
+    case ENEMY_AIMER:
+        color = COLOR_AIMER;
+        reward = 180;
+        break;
+    case ENEMY_ORBITER:
+        color = COLOR_ORBIT;
+        reward = 240;
+        break;
+    case ENEMY_BOSS:
+        color = COLOR_BOSS;
+        reward = 3000;
+        game->boss_defeated = true;
+        game->clear_timer = 2.0f;
+        ClearEnemyBullets(game);
+        break;
+    }
+
+    game->score += reward;
+    SpawnBurst(game, enemy->position, color, enemy->kind == ENEMY_BOSS ? 42 : 16,
+               enemy->kind == ENEMY_BOSS ? 240.0f : 160.0f);
+    enemy->active = false;
+}
+
+static void UpdatePlayerBullets(Game *game, float dt)
+{
+    for (int i = 0; i < MAX_PLAYER_BULLETS; ++i)
+    {
+        Bullet *bullet = &game->player_bullets[i];
+
+        if (!bullet->active)
+        {
+            continue;
+        }
+
+        bullet->age += dt;
+        bullet->position.x += bullet->velocity.x * dt;
+        bullet->position.y += bullet->velocity.y * dt;
+
+        if (!IsInsideExtendedPlayfield(bullet->position, 32.0f))
+        {
+            bullet->active = false;
+            continue;
+        }
+
+        for (int j = 0; j < MAX_ENEMIES; ++j)
+        {
+            Enemy *enemy = &game->enemies[j];
+
+            if (!enemy->active)
+            {
+                continue;
+            }
+
+            if (LogicCircleOverlap(ToLogic(bullet->position), bullet->radius,
+                                   ToLogic(enemy->position), enemy->radius))
+            {
+                enemy->hp -= enemy->kind == ENEMY_BOSS ? 1 : 2;
+                bullet->active = false;
+                SpawnParticle(game, bullet->position, (Vector2){0.0f, -45.0f}, 2.0f, 0.12f,
+                              COLOR_PLAYER);
+
+                if (enemy->hp <= 0)
+                {
+                    DestroyEnemy(game, enemy);
+                }
+                break;
+            }
+        }
+    }
+}
+
+static void UpdateEnemyBulletGrazeAndHit(Game *game)
+{
+    if (!game->player.alive)
+    {
+        return;
+    }
+
+    for (int i = 0; i < MAX_ENEMY_BULLETS; ++i)
+    {
+        Bullet *bullet = &game->enemy_bullets[i];
+
+        if (!bullet->active)
+        {
+            continue;
+        }
+
+        if (!bullet->grazed &&
+            LogicCircleOverlap(ToLogic(bullet->position), bullet->radius + PLAYER_GRAZE_RADIUS,
+                               ToLogic(game->player.position), PLAYER_RADIUS))
+        {
+            bullet->grazed = true;
+            game->score += 5;
+            SpawnParticle(game, bullet->position, (Vector2){0.0f, -20.0f}, 2.0f, 0.18f,
+                          COLOR_PLAYER_ACCENT);
+        }
+
+        if (game->player.invulnerable_timer <= 0.0f &&
+            LogicCircleOverlap(ToLogic(bullet->position), bullet->radius,
+                               ToLogic(game->player.position), PLAYER_HITBOX_RADIUS))
+        {
+            DamagePlayer(game);
+            return;
+        }
+    }
+
+    for (int i = 0; i < MAX_ENEMIES; ++i)
+    {
+        Enemy *enemy = &game->enemies[i];
+
+        if (!enemy->active || enemy->kind == ENEMY_BOSS)
+        {
+            continue;
+        }
+
+        if (game->player.invulnerable_timer <= 0.0f &&
+            LogicCircleOverlap(ToLogic(enemy->position), enemy->radius * 0.55f,
+                               ToLogic(game->player.position), PLAYER_HITBOX_RADIUS))
+        {
+            DamagePlayer(game);
+            return;
+        }
+    }
+}
+
+static void UpdateEnemyBullets(Game *game, float dt)
+{
+    for (int i = 0; i < MAX_ENEMY_BULLETS; ++i)
+    {
+        Bullet *bullet = &game->enemy_bullets[i];
+
+        if (!bullet->active)
+        {
+            continue;
+        }
+
+        bullet->age += dt;
+        bullet->position.x += bullet->velocity.x * dt;
+        bullet->position.y += bullet->velocity.y * dt;
+
+        if (bullet->kind == BULLET_SPIRAL)
+        {
+            float angle = atan2f(bullet->velocity.y, bullet->velocity.x) + 0.7f * dt;
+            float speed = LogicLength(ToLogic(bullet->velocity));
+            bullet->velocity = ToVector(LogicPolar(angle, speed));
+        }
+
+        if (!IsInsideExtendedPlayfield(bullet->position, 40.0f))
+        {
+            bullet->active = false;
+        }
+    }
+
+    UpdateEnemyBulletGrazeAndHit(game);
+}
+
+static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
+{
+    enemy->age += dt;
+    enemy->phase_clock += dt;
+    enemy->cooldown -= dt;
+    enemy->aux_cooldown -= dt;
+
+    switch (enemy->kind)
+    {
+    case ENEMY_SWEEP:
+        enemy->position.x += enemy->velocity.x * dt;
+        enemy->position.y += enemy->velocity.y * dt;
+
+        if (enemy->position.x < game->playfield.x + 26.0f ||
+            enemy->position.x > game->playfield.x + game->playfield.width - 26.0f)
+        {
+            enemy->velocity.x *= -1.0f;
+        }
+
+        if (enemy->cooldown <= 0.0f && enemy->position.y > game->playfield.y + 30.0f)
+        {
+            EmitFan(game, enemy->position, game->player.position, 235.0f, 5, 1.0f, BULLET_RING,
+                    7.0f);
+            enemy->cooldown = 1.15f;
+        }
+
+        if (enemy->age > 8.0f)
+        {
+            enemy->active = false;
+        }
+        break;
+
+    case ENEMY_AIMER:
+        enemy->position.x += enemy->velocity.x * dt;
+        enemy->position.y += enemy->velocity.y * dt;
+        enemy->velocity.y = LogicApproach(enemy->velocity.y, 28.0f, 80.0f * dt);
+
+        if (enemy->cooldown <= 0.0f && enemy->position.y > game->playfield.y + 40.0f)
+        {
+            EmitFan(game, enemy->position, game->player.position, 275.0f, 4, 0.72f, BULLET_AIMED,
+                    6.5f);
+            enemy->cooldown = 1.0f;
+        }
+
+        if (enemy->age > 7.0f)
+        {
+            enemy->active = false;
+        }
+        break;
+
+    case ENEMY_ORBITER:
+        enemy->position.y += enemy->velocity.y * dt;
+        enemy->position.x = enemy->anchor_x + sinf(enemy->age * 1.9f + enemy->aux_cooldown) * 86.0f;
+
+        if (enemy->cooldown <= 0.0f && enemy->position.y > game->playfield.y + 45.0f)
+        {
+            EmitRing(game, enemy->position, 180.0f, 12, enemy->phase_clock * 0.8f, BULLET_WALL,
+                     7.5f);
+            enemy->cooldown = 1.05f;
+        }
+
+        if (enemy->age > 7.8f)
+        {
+            enemy->active = false;
+        }
+        break;
+
+    case ENEMY_BOSS:
+        enemy->position.y =
+            LogicApproach(enemy->position.y, game->playfield.y + 165.0f, 120.0f * dt);
+        enemy->position.x =
+            game->playfield.x + game->playfield.width * 0.5f + sinf(enemy->age * 0.72f) * 158.0f;
+
+        if (enemy->hp > 220)
+        {
+            if (enemy->cooldown <= 0.0f)
+            {
+                EmitRing(game, enemy->position, 185.0f, 18, enemy->phase_clock * 0.6f, BULLET_RING,
+                         7.0f);
+                EmitRing(game, enemy->position, 270.0f, 9, -enemy->phase_clock * 0.85f,
+                         BULLET_AIMED, 5.5f);
+                enemy->cooldown = 0.72f;
+            }
+        }
+        else if (enemy->hp > 120)
+        {
+            if (enemy->cooldown <= 0.0f)
+            {
+                EmitFan(game, enemy->position, game->player.position, 310.0f, 9, 1.35f,
+                        BULLET_AIMED, 6.0f);
+                enemy->cooldown = 0.56f;
+            }
+
+            if (enemy->aux_cooldown <= 0.0f)
+            {
+                EmitCurtain(game, enemy->position, game->playfield.x + game->playfield.width * 0.5f,
+                            game->playfield.width - 84.0f, 220.0f, 10);
+                enemy->aux_cooldown = 1.6f;
+            }
+        }
+        else
+        {
+            if (enemy->cooldown <= 0.0f)
+            {
+                for (int i = 0; i < 4; ++i)
+                {
+                    float angle = enemy->phase_clock * 3.8f + ((float)i * TAU / 4.0f);
+                    SpawnEnemyBullet(game, BULLET_SPIRAL, enemy->position,
+                                     ToVector(LogicPolar(angle, 240.0f)), 6.5f);
+                    SpawnEnemyBullet(game, BULLET_SPIRAL, enemy->position,
+                                     ToVector(LogicPolar(-angle, 240.0f)), 6.5f);
+                }
+                enemy->cooldown = 0.09f;
+            }
+
+            if (enemy->aux_cooldown <= 0.0f)
+            {
+                EmitFan(game, enemy->position, game->player.position, 340.0f, 11, 1.7f, BULLET_WALL,
+                        7.0f);
+                enemy->aux_cooldown = 1.05f;
+            }
+        }
+        break;
+    }
+
+    if (!IsInsideExtendedPlayfield(enemy->position, 120.0f) && enemy->kind != ENEMY_BOSS)
+    {
+        enemy->active = false;
+    }
+}
+
+static void UpdateEnemies(Game *game, float dt)
+{
+    for (int i = 0; i < MAX_ENEMIES; ++i)
+    {
+        if (!game->enemies[i].active)
+        {
+            continue;
+        }
+
+        UpdateEnemy(game, &game->enemies[i], dt);
+    }
+}
+
+void GameUpdate(Game *game, float dt)
+{
+    dt = LogicClamp(dt, 0.0f, 1.0f / 30.0f);
+    game->state_time += dt;
+    UpdateParticles(game, dt);
+
+    if (game->mode == GAME_MODE_TITLE)
+    {
+        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE))
+        {
+            ResetRun(game);
+        }
+        return;
+    }
+
+    if (game->mode == GAME_MODE_GAME_OVER || game->mode == GAME_MODE_CLEAR)
+    {
+        if (game->mode == GAME_MODE_CLEAR)
+        {
+            Enemy *boss = FindBoss(game);
+            if (boss != NULL)
+            {
+                boss->active = false;
+            }
+        }
+
+        if (IsKeyPressed(KEY_R) || IsKeyPressed(KEY_ENTER))
+        {
+            ResetRun(game);
+        }
+        return;
+    }
+
+    game->stage_time += dt;
+    RunStageScript(game);
+    UpdatePlayer(game, dt);
+    UpdateEnemies(game, dt);
+    UpdatePlayerBullets(game, dt);
+    UpdateEnemyBullets(game, dt);
+
+    if (game->boss_defeated)
+    {
+        game->clear_timer -= dt;
+        if (game->clear_timer <= 0.0f)
+        {
+            game->mode = GAME_MODE_CLEAR;
+            game->state_time = 0.0f;
+        }
+    }
+}
+
+static void DrawBackdrop(const Game *game)
+{
+    float pulse = 0.5f + 0.5f * sinf(game->state_time * 0.8f);
+
+    ClearBackground(COLOR_BG);
+    DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BG);
+    DrawRectangle(22, 22, PLAYFIELD_X - 42, SCREEN_HEIGHT - 44, COLOR_PANEL);
+    DrawRectangle(PLAYFIELD_X + PLAYFIELD_WIDTH + 20, 22,
+                  SCREEN_WIDTH - (PLAYFIELD_X + PLAYFIELD_WIDTH + 42), SCREEN_HEIGHT - 44,
+                  COLOR_PANEL);
+    DrawRectangleRec(game->playfield, COLOR_PLAYFIELD);
+    DrawRectangleLinesEx(game->playfield, 2.0f, COLOR_PANEL_LINE);
+
+    for (int i = 0; i < 14; ++i)
+    {
+        float y = game->playfield.y +
+                  fmodf(game->state_time * (20.0f + (float)i * 7.0f) + (float)i * 58.0f,
+                        game->playfield.height);
+        Color line = ColorAlpha(COLOR_GRID, 0.25f + 0.15f * pulse);
+        DrawLineEx((Vector2){game->playfield.x + 12.0f, y},
+                   (Vector2){game->playfield.x + game->playfield.width - 12.0f, y},
+                   1.0f + (float)(i % 2), line);
+    }
+
+    for (int i = 0; i < 9; ++i)
+    {
+        float t = game->state_time * (14.0f + (float)i * 2.5f) + (float)i * 71.0f;
+        float y = game->playfield.y + fmodf(t, game->playfield.height + 120.0f) - 60.0f;
+        float x = game->playfield.x + game->playfield.width * (0.12f + 0.08f * (float)i) +
+                  sinf(game->state_time * 0.7f + (float)i) * 28.0f;
+        DrawPolyLinesEx((Vector2){x, y}, 4, 10.0f + (float)(i % 3) * 6.0f,
+                        game->state_time * 18.0f + (float)i * 14.0f, 1.5f,
+                        ColorAlpha(COLOR_GRID, 0.5f));
+    }
+}
+
+static void DrawPlayer(const Game *game)
+{
+    float blink = 0.5f + 0.5f * sinf(game->state_time * 16.0f);
+    Color body = COLOR_PLAYER;
+    bool focus = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+
+    if (!game->player.alive)
+    {
+        return;
+    }
+
+    if (game->player.invulnerable_timer > 0.0f)
+    {
+        body = ColorAlpha(body, 0.35f + 0.45f * blink);
+    }
+
+    DrawTriangle((Vector2){game->player.position.x, game->player.position.y - 16.0f},
+                 (Vector2){game->player.position.x - 12.0f, game->player.position.y + 10.0f},
+                 (Vector2){game->player.position.x + 12.0f, game->player.position.y + 10.0f}, body);
+    DrawPoly((Vector2){game->player.position.x, game->player.position.y + 6.0f}, 4, 8.0f, 45.0f,
+             COLOR_PLAYER_ACCENT);
+
+    if (focus)
+    {
+        DrawCircleLines((int)game->player.position.x, (int)game->player.position.y,
+                        PLAYER_GRAZE_RADIUS, ColorAlpha(COLOR_PLAYER_ACCENT, 0.24f));
+        DrawCircleV(game->player.position, PLAYER_HITBOX_RADIUS, COLOR_PLAYER);
+    }
+}
+
+static void DrawEnemy(const Enemy *enemy)
+{
+    switch (enemy->kind)
+    {
+    case ENEMY_SWEEP:
+        DrawPolyLinesEx(enemy->position, 4, enemy->radius, enemy->age * 40.0f, 3.0f, COLOR_SWEEP);
+        DrawLineEx((Vector2){enemy->position.x - enemy->radius, enemy->position.y},
+                   (Vector2){enemy->position.x + enemy->radius, enemy->position.y}, 2.0f,
+                   COLOR_SWEEP);
+        break;
+
+    case ENEMY_AIMER:
+        DrawPoly(enemy->position, 3, enemy->radius, 180.0f, ColorAlpha(COLOR_AIMER, 0.25f));
+        DrawPolyLinesEx(enemy->position, 3, enemy->radius, 180.0f, 3.0f, COLOR_AIMER);
+        break;
+
+    case ENEMY_ORBITER:
+        DrawCircleLines((int)enemy->position.x, (int)enemy->position.y, enemy->radius, COLOR_ORBIT);
+        DrawPolyLinesEx(enemy->position, 6, enemy->radius - 4.0f, enemy->age * 30.0f, 2.5f,
+                        COLOR_ORBIT);
+        break;
+
+    case ENEMY_BOSS:
+        DrawPolyLinesEx(enemy->position, 4, enemy->radius + 12.0f, enemy->age * 22.0f, 4.0f,
+                        COLOR_BOSS);
+        DrawCircleLines((int)enemy->position.x, (int)enemy->position.y, enemy->radius + 26.0f,
+                        ColorAlpha(COLOR_SPIRAL, 0.5f));
+        DrawPoly(enemy->position, 6, enemy->radius - 10.0f, enemy->age * 30.0f,
+                 ColorAlpha(COLOR_AIMED, 0.18f));
+        DrawCircleV(enemy->position, enemy->radius - 18.0f, COLOR_BOSS);
+        DrawCircleV(enemy->position, 7.0f, COLOR_BG);
+        break;
+    }
+}
+
+static void DrawBullet(const Bullet *bullet)
+{
+    float rotation = atan2f(bullet->velocity.y, bullet->velocity.x) * RAD2DEG;
+
+    switch (bullet->kind)
+    {
+    case BULLET_PLAYER:
+        DrawRectanglePro((Rectangle){bullet->position.x, bullet->position.y, 5.0f, 18.0f},
+                         (Vector2){2.5f, 9.0f}, rotation + 90.0f, COLOR_PLAYER);
+        break;
+
+    case BULLET_RING:
+        DrawCircleV(bullet->position, bullet->radius, COLOR_RING);
+        DrawCircleLines((int)bullet->position.x, (int)bullet->position.y, bullet->radius + 1.0f,
+                        ColorAlpha(COLOR_RING, 0.65f));
+        break;
+
+    case BULLET_AIMED:
+        DrawPoly(bullet->position, 4, bullet->radius + 1.0f, rotation + 45.0f, COLOR_AIMED);
+        break;
+
+    case BULLET_WALL:
+        DrawRectanglePro((Rectangle){bullet->position.x, bullet->position.y, bullet->radius * 2.7f,
+                                     bullet->radius * 1.15f},
+                         (Vector2){bullet->radius * 1.35f, bullet->radius * 0.575f}, rotation,
+                         COLOR_WALL);
+        break;
+
+    case BULLET_SPIRAL:
+        DrawPoly(bullet->position, 5, bullet->radius + 1.0f, rotation, COLOR_SPIRAL);
+        break;
+    }
+}
+
+static void DrawParticles(const Game *game)
+{
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        const Particle *particle = &game->particles[i];
+        float alpha;
+
+        if (!particle->active)
+        {
+            continue;
+        }
+
+        alpha = 1.0f - particle->age / particle->lifetime;
+        DrawCircleV(particle->position, particle->radius * alpha,
+                    ColorAlpha(particle->color, alpha));
+    }
+}
+
+static void DrawHud(const Game *game)
+{
+    const Enemy *boss = FindBossConst(game);
+    int left_x = 52;
+    int right_x = PLAYFIELD_X + PLAYFIELD_WIDTH + 46;
+
+    DrawText("AXIOM", left_x, 64, 34, COLOR_PLAYER);
+    DrawText("NULL", left_x, 96, 34, COLOR_PLAYER_ACCENT);
+    DrawText("WASD / ARROWS", left_x, 170, 20, COLOR_PLAYER);
+    DrawText("MOVE", left_x, 194, 18, ColorAlpha(COLOR_PLAYER, 0.6f));
+    DrawText("SHIFT", left_x, 242, 20, COLOR_PLAYER);
+    DrawText("FOCUS", left_x, 266, 18, ColorAlpha(COLOR_PLAYER, 0.6f));
+    DrawText("ENTER", left_x, 314, 20, COLOR_PLAYER);
+    DrawText("START / RESTART", left_x, 338, 18, ColorAlpha(COLOR_PLAYER, 0.6f));
+
+    DrawText("SCORE", right_x, 64, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
+    DrawText(TextFormat("%08u", game->score), right_x, 92, 34, COLOR_PLAYER);
+    DrawText("LIVES", right_x, 176, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
+
+    for (int i = 0; i < game->player.lives; ++i)
+    {
+        DrawPoly((Vector2){(float)right_x + 18.0f + (float)i * 28.0f, 220.0f}, 4, 10.0f, 45.0f,
+                 COLOR_PLAYER_ACCENT);
+    }
+
+    DrawText("STAGE", right_x, 286, 22, ColorAlpha(COLOR_PLAYER, 0.7f));
+    if (!game->boss_spawned)
+    {
+        DrawText("ONE", right_x, 314, 30, COLOR_PLAYER);
+        DrawText(TextFormat("%04.1fs", game->stage_time), right_x, 352, 24,
+                 ColorAlpha(COLOR_PLAYER, 0.7f));
+    }
+    else if (!game->boss_defeated)
+    {
+        DrawText("BOSS", right_x, 314, 30, COLOR_SPIRAL);
+    }
+    else
+    {
+        DrawText("CLEAR", right_x, 314, 30, COLOR_AIMED);
+    }
+
+    if (boss != NULL)
+    {
+        float ratio = LogicClamp((float)boss->hp / 320.0f, 0.0f, 1.0f);
+        Rectangle frame = {(float)right_x, 392.0f, 208.0f, 16.0f};
+        DrawText("CORE", right_x, 420, 18, ColorAlpha(COLOR_PLAYER, 0.7f));
+        DrawRectangleRec(frame, COLOR_GRID);
+        DrawRectangle((int)frame.x + 2, (int)frame.y + 2, (int)((frame.width - 4.0f) * ratio),
+                      (int)frame.height - 4, COLOR_BOSS);
+        DrawRectangleLinesEx(frame, 2.0f, COLOR_PANEL_LINE);
+    }
+}
+
+static void DrawTitleOverlay(const Game *game)
+{
+    float pulse = 0.5f + 0.5f * sinf(game->state_time * 2.2f);
+    Color text_color = ColorAlpha(COLOR_PLAYER, 0.8f + 0.2f * pulse);
+
+    DrawRectangle((int)game->playfield.x + 48, (int)game->playfield.y + 210, PLAYFIELD_WIDTH - 96,
+                  220, Fade(COLOR_PANEL, 0.78f));
+    DrawText("ABSTRACT MINIMALIST", PLAYFIELD_X + 88, PLAYFIELD_Y + 250, 20, COLOR_PLAYER_ACCENT);
+    DrawText("VERTICAL BULLET HELL", PLAYFIELD_X + 88, PLAYFIELD_Y + 282, 36, text_color);
+    DrawText("graze bullets / survive the stage / break the core", PLAYFIELD_X + 88,
+             PLAYFIELD_Y + 334, 22, ColorAlpha(COLOR_PLAYER, 0.65f));
+    DrawText("PRESS ENTER", PLAYFIELD_X + 88, PLAYFIELD_Y + 388, 28, text_color);
+}
+
+static void DrawEndOverlay(const Game *game, const char *headline, Color color)
+{
+    float pulse = 0.5f + 0.5f * sinf(game->state_time * 3.0f);
+
+    DrawRectangle((int)game->playfield.x + 66, (int)game->playfield.y + 230, PLAYFIELD_WIDTH - 132,
+                  180, Fade(COLOR_PANEL, 0.82f));
+    DrawText(headline, PLAYFIELD_X + 112, PLAYFIELD_Y + 282, 44,
+             ColorAlpha(color, 0.8f + 0.2f * pulse));
+    DrawText("PRESS R OR ENTER", PLAYFIELD_X + 112, PLAYFIELD_Y + 342, 24, COLOR_PLAYER);
+}
+
+void GameDraw(const Game *game)
+{
+    DrawBackdrop(game);
+    DrawParticles(game);
+
+    for (int i = 0; i < MAX_PLAYER_BULLETS; ++i)
+    {
+        if (game->player_bullets[i].active)
+        {
+            DrawBullet(&game->player_bullets[i]);
+        }
+    }
+
+    for (int i = 0; i < MAX_ENEMY_BULLETS; ++i)
+    {
+        if (game->enemy_bullets[i].active)
+        {
+            DrawBullet(&game->enemy_bullets[i]);
+        }
+    }
+
+    for (int i = 0; i < MAX_ENEMIES; ++i)
+    {
+        if (game->enemies[i].active)
+        {
+            DrawEnemy(&game->enemies[i]);
+        }
+    }
+
+    DrawPlayer(game);
+    DrawHud(game);
+
+    if (game->mode == GAME_MODE_TITLE)
+    {
+        DrawTitleOverlay(game);
+    }
+    else if (game->mode == GAME_MODE_GAME_OVER)
+    {
+        DrawEndOverlay(game, "SYSTEM BREAK", COLOR_RING);
+    }
+    else if (game->mode == GAME_MODE_CLEAR)
+    {
+        DrawEndOverlay(game, "AXIOM SHATTERED", COLOR_AIMED);
+    }
+}
