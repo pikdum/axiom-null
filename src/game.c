@@ -1567,6 +1567,8 @@ static void DrawHud(const Game *game)
     const Enemy *boss = FindBossConst(game);
     int left_x = 52;
     int right_x = PLAYFIELD_X + PLAYFIELD_WIDTH + 46;
+    int right_panel_width = SCREEN_WIDTH - (PLAYFIELD_X + PLAYFIELD_WIDTH + 42);
+    float boss_bar_width = (float)(right_panel_width - 40);
 
     DrawText("AXIOM", left_x, 64, 34, COLOR_PLAYER);
     DrawText("NULL", left_x, 96, 34, COLOR_PLAYER_ACCENT);
@@ -1618,7 +1620,7 @@ static void DrawHud(const Game *game)
     if (boss != NULL)
     {
         float ratio = LogicClamp((float)boss->hp / (float)boss->max_hp, 0.0f, 1.0f);
-        Rectangle frame = {(float)right_x, 510.0f, 208.0f, 16.0f};
+        Rectangle frame = {(float)right_x, 510.0f, boss_bar_width, 16.0f};
         DrawText("CORE", right_x, 538, 18, ColorAlpha(COLOR_PLAYER, 0.7f));
         DrawRectangleRec(frame, COLOR_GRID);
         DrawRectangle((int)frame.x + 2, (int)frame.y + 2, (int)((frame.width - 4.0f) * ratio),
@@ -1691,6 +1693,9 @@ static void DrawEndOverlay(const Game *game, const char *headline, Color color)
 void GameDraw(const Game *game)
 {
     DrawBackdrop(game);
+
+    BeginScissorMode((int)game->playfield.x, (int)game->playfield.y, (int)game->playfield.width,
+                     (int)game->playfield.height);
     DrawParticles(game);
 
     for (int i = 0; i < MAX_PLAYER_BULLETS; ++i)
@@ -1718,6 +1723,7 @@ void GameDraw(const Game *game)
     }
 
     DrawPlayer(game);
+    EndScissorMode();
     DrawHud(game);
 
     if (game->mode == GAME_MODE_TITLE)
