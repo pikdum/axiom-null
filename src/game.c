@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "logic.h"
+#include "stage.h"
 
 static const float TAU = 6.28318530717958647692f;
 static const float PLAYER_RADIUS = 10.0f;
@@ -329,6 +330,7 @@ static Enemy *SpawnEnemy(Game *game, EnemyKind kind, Vector2 position, Vector2 v
         return NULL;
     }
 
+    *enemy = (Enemy){0};
     enemy->active = true;
     enemy->kind = kind;
     enemy->position = position;
@@ -386,10 +388,12 @@ static void ClearEnemyBullets(Game *game)
 }
 
 static void JumpToBoss(Game *game);
+static void ProcessStageCues(Game *game);
 
 static void ResetRun(Game *game)
 {
     Rectangle playfield = game->playfield;
+    const StageDef *stage = game->stage;
     Difficulty difficulty = game->difficulty;
     bool debug_invulnerable = game->debug_invulnerable;
     bool debug_infinite_lives = game->debug_infinite_lives;
@@ -397,6 +401,7 @@ static void ResetRun(Game *game)
 
     memset(game, 0, sizeof(*game));
     game->playfield = playfield;
+    game->stage = stage;
     game->difficulty = difficulty;
     game->debug_invulnerable = debug_invulnerable;
     game->debug_infinite_lives = debug_infinite_lives;
@@ -421,6 +426,7 @@ static void ResetRun(Game *game)
 void GameInit(Game *game)
 {
     memset(game, 0, sizeof(*game));
+    game->stage = StageGetDefault();
     game->difficulty = DIFFICULTY_CASUAL;
     game->playfield = (Rectangle){
         .x = (float)PLAYFIELD_X,
@@ -484,51 +490,124 @@ static void EmitCurtain(Game *game, Vector2 origin, float center_x, float width,
     }
 }
 
-static void SpawnSweepRow(Game *game, int count, float y, float speed, bool mirrored)
+static void EmitSpiralBurst(Game *game, Vector2 position, float speed, int count, float angle_scale,
+                            float radius, BulletKind kind, float phase_clock)
 {
     for (int i = 0; i < count; ++i)
     {
-        float t = count == 1 ? 0.5f : (float)i / (float)(count - 1);
-        float x = game->playfield.x + 50.0f + (game->playfield.width - 100.0f) * t;
-        float direction = (i % 2 == 0) ? 1.0f : -1.0f;
-        float vx = direction * (mirrored ? 90.0f : 50.0f);
-        Vector2 velocity = {vx, speed};
+        float angle = phase_clock * angle_scale + ((float)i * TAU / (float)count);
 
-        SpawnEnemy(game, ENEMY_SWEEP, (Vector2){x, y}, velocity, 18.0f, 16,
-                   0.65f + 0.08f * (float)i, 0.0f);
+        SpawnEnemyBullet(game, kind, position, ToVector(LogicPolar(angle, speed)), radius);
+        SpawnEnemyBullet(game, kind, position, ToVector(LogicPolar(-angle, speed)), radius);
     }
 }
 
-static void SpawnAimerPair(Game *game, float y, float horizontal_speed)
+static void EmitAttackEmitter(Game *game, Enemy *enemy, const AttackEmitterDef *emitter)
 {
-    SpawnEnemy(game, ENEMY_AIMER, (Vector2){game->playfield.x + 120.0f, y},
-               (Vector2){horizontal_speed, 52.0f}, 20.0f, 26, 1.0f, 0.0f);
-    SpawnEnemy(game, ENEMY_AIMER,
-               (Vector2){game->playfield.x + game->playfield.width - 120.0f, y - 30.0f},
-               (Vector2){-horizontal_speed, 52.0f}, 20.0f, 26, 1.2f, 0.0f);
+    switch (emitter->type)
+    {
+    case ATTACK_EMITTER_NONE:
+        break;
+    case ATTACK_EMITTER_FAN:
+        EmitFan(game, enemy->position, game->player.position, emitter->speed, emitter->count,
+                emitter->spread_or_width, emitter->bullet_kind, emitter->radius);
+        break;
+    case ATTACK_EMITTER_RING:
+        EmitRing(game, enemy->position, emitter->speed, emitter->count,
+                 enemy->phase_clock * emitter->angle_scale, emitter->bullet_kind, emitter->radius);
+        break;
+    case ATTACK_EMITTER_CURTAIN:
+        EmitCurtain(game, enemy->position, game->playfield.x + game->playfield.width * 0.5f,
+                    emitter->spread_or_width, emitter->speed, emitter->count);
+        break;
+    case ATTACK_EMITTER_SPIRAL_BURST:
+        EmitSpiralBurst(game, enemy->position, emitter->speed, emitter->count, emitter->angle_scale,
+                        emitter->radius, emitter->bullet_kind, enemy->phase_clock);
+        break;
+    }
 }
 
-static void SpawnOrbiters(Game *game, float y)
+static AttackPatternId GetEnemyActivePattern(const Enemy *enemy)
 {
-    SpawnEnemy(game, ENEMY_ORBITER, (Vector2){game->playfield.x + 150.0f, y},
-               (Vector2){0.0f, 42.0f}, 22.0f, 32, 0.75f, 0.0f);
-    SpawnEnemy(game, ENEMY_ORBITER,
-               (Vector2){game->playfield.x + game->playfield.width - 150.0f, y - 45.0f},
-               (Vector2){0.0f, 42.0f}, 22.0f, 32, 1.1f, 1.1f);
+    AttackPatternId pattern = enemy->phase_patterns[0];
+
+    if (enemy->phase_patterns[1] != ATTACK_PATTERN_NONE && enemy->hp <= enemy->phase_thresholds[0])
+    {
+        pattern = enemy->phase_patterns[1];
+    }
+
+    if (enemy->phase_patterns[2] != ATTACK_PATTERN_NONE && enemy->hp <= enemy->phase_thresholds[1])
+    {
+        pattern = enemy->phase_patterns[2];
+    }
+
+    return pattern;
 }
 
-static void SpawnBoss(Game *game)
+static void SpawnEnemyFromArchetype(Game *game, const WaveSpawnDef *spawn)
 {
-    int hp = DifficultyBossHp(game);
-    Enemy *boss = SpawnEnemy(
-        game, ENEMY_BOSS,
-        (Vector2){game->playfield.x + game->playfield.width * 0.5f, game->playfield.y - 120.0f},
-        (Vector2){0.0f, 0.0f}, 46.0f, hp, 0.6f, 1.25f);
+    const EnemyArchetypeDef *archetype = StageGetEnemyArchetype(spawn->archetype);
+    Vector2 position;
+    Vector2 velocity;
+    int hp;
+    Enemy *enemy;
 
-    if (boss != NULL)
+    if (archetype == NULL)
+    {
+        return;
+    }
+
+    position =
+        (Vector2){game->playfield.x + game->playfield.width * spawn->x_factor + spawn->x_offset,
+                  game->playfield.y + spawn->y_offset};
+    velocity = (Vector2){spawn->velocity_x, spawn->velocity_y};
+    hp = archetype->kind == ENEMY_BOSS ? DifficultyBossHp(game) : archetype->hp;
+
+    enemy = SpawnEnemy(game, archetype->kind, position, velocity, archetype->radius, hp,
+                       archetype->base_cooldown + spawn->cooldown_offset,
+                       archetype->base_aux_cooldown + spawn->aux_cooldown_offset);
+    if (enemy == NULL)
+    {
+        return;
+    }
+
+    enemy->movement = archetype->movement;
+    enemy->collision_scale = archetype->collision_scale;
+    enemy->reward = archetype->reward;
+    enemy->lifetime = archetype->lifetime;
+    enemy->attack_start_y = archetype->attack_start_y;
+    enemy->move_param_a = archetype->move_param_a;
+    enemy->move_param_b = archetype->move_param_b;
+    enemy->move_param_c = spawn->movement_phase_offset;
+    if (archetype->movement == ENEMY_MOVE_BOSS_CORE)
+    {
+        enemy->move_param_c = archetype->move_param_c;
+    }
+    for (int i = 0; i < 3; ++i)
+    {
+        enemy->phase_patterns[i] = archetype->phase_patterns[i];
+    }
+    enemy->phase_thresholds[0] = (int)((float)enemy->max_hp * archetype->phase_ratios[0]);
+    enemy->phase_thresholds[1] = (int)((float)enemy->max_hp * archetype->phase_ratios[1]);
+
+    if (enemy->kind == ENEMY_BOSS)
     {
         game->boss_spawned = true;
         AudioPlaySfx(AUDIO_SFX_BOSS_ALERT);
+    }
+}
+
+static void ExecuteWave(Game *game, WaveId wave_id)
+{
+    const WaveDef *wave = StageGetWaveDefinition(wave_id);
+
+    if (wave == NULL)
+    {
+        return;
+    }
+
+    if (wave->clear_non_boss_on_start)
+    {
         ClearEnemyBullets(game);
 
         for (int i = 0; i < MAX_ENEMIES; ++i)
@@ -540,61 +619,33 @@ static void SpawnBoss(Game *game)
             }
         }
     }
+
+    for (int i = 0; i < wave->spawn_count; ++i)
+    {
+        SpawnEnemyFromArchetype(game, &wave->spawns[i]);
+    }
 }
 
 static void JumpToBoss(Game *game)
 {
-    for (int i = 0; i < 5; ++i)
-    {
-        game->script_flags[i] = true;
-    }
-
     game->stage_time = 22.1f;
-    SpawnBoss(game);
+    game->next_stage_cue = game->stage != NULL ? game->stage->cue_count : 0;
+    ExecuteWave(game, WAVE_BOSS_ENTRY);
     SetStatusMessage(game, "PHASE MODE: BOSS ENTRY");
 }
 
-static void RunStageScript(Game *game)
+static void ProcessStageCues(Game *game)
 {
-    if (!game->script_flags[0] && game->stage_time > 0.8f)
+    if (game->stage == NULL)
     {
-        game->script_flags[0] = true;
-        SpawnSweepRow(game, 5, game->playfield.y - 20.0f, 82.0f, false);
+        return;
     }
 
-    if (!game->script_flags[1] && game->stage_time > 4.6f)
+    while (game->next_stage_cue < game->stage->cue_count &&
+           game->stage->cues[game->next_stage_cue].trigger_time <= game->stage_time)
     {
-        game->script_flags[1] = true;
-        SpawnAimerPair(game, game->playfield.y - 10.0f, 42.0f);
-    }
-
-    if (!game->script_flags[2] && game->stage_time > 8.2f)
-    {
-        game->script_flags[2] = true;
-        SpawnOrbiters(game, game->playfield.y - 40.0f);
-    }
-
-    if (!game->script_flags[3] && game->stage_time > 12.4f)
-    {
-        game->script_flags[3] = true;
-        SpawnSweepRow(game, 6, game->playfield.y - 30.0f, 105.0f, true);
-        SpawnEnemy(
-            game, ENEMY_AIMER,
-            (Vector2){game->playfield.x + game->playfield.width * 0.5f, game->playfield.y - 60.0f},
-            (Vector2){0.0f, 64.0f}, 20.0f, 34, 1.0f, 0.0f);
-    }
-
-    if (!game->script_flags[4] && game->stage_time > 17.0f)
-    {
-        game->script_flags[4] = true;
-        SpawnAimerPair(game, game->playfield.y - 20.0f, 58.0f);
-        SpawnSweepRow(game, 4, game->playfield.y - 20.0f, 128.0f, false);
-    }
-
-    if (!game->script_flags[5] && game->stage_time > 22.0f)
-    {
-        game->script_flags[5] = true;
-        SpawnBoss(game);
+        ExecuteWave(game, game->stage->cues[game->next_stage_cue].wave);
+        game->next_stage_cue++;
     }
 }
 
@@ -902,32 +953,27 @@ static void UpdateParticles(Game *game, float dt)
 static void DestroyEnemy(Game *game, Enemy *enemy)
 {
     Color color = COLOR_SWEEP;
-    unsigned int reward = 100;
 
     switch (enemy->kind)
     {
     case ENEMY_SWEEP:
         color = COLOR_SWEEP;
-        reward = 100;
         break;
     case ENEMY_AIMER:
         color = COLOR_AIMER;
-        reward = 180;
         break;
     case ENEMY_ORBITER:
         color = COLOR_ORBIT;
-        reward = 240;
         break;
     case ENEMY_BOSS:
         color = COLOR_BOSS;
-        reward = 3000;
         game->boss_defeated = true;
         game->clear_timer = 2.0f;
         ClearEnemyBullets(game);
         break;
     }
 
-    game->score += reward;
+    game->score += enemy->reward;
     AudioPlaySfx(enemy->kind == ENEMY_BOSS ? AUDIO_SFX_STAGE_CLEAR : AUDIO_SFX_ENEMY_DESTROY);
     SpawnBurst(game, enemy->position, color, enemy->kind == ENEMY_BOSS ? 42 : 16,
                enemy->kind == ENEMY_BOSS ? 240.0f : 160.0f);
@@ -1059,7 +1105,7 @@ static void UpdateEnemyBulletGrazeAndHit(Game *game)
         }
 
         if (game->player.invulnerable_timer <= 0.0f &&
-            LogicCircleOverlap(ToLogic(enemy->position), enemy->radius * 0.55f,
+            LogicCircleOverlap(ToLogic(enemy->position), enemy->radius * enemy->collision_scale,
                                ToLogic(game->player.position), PLAYER_HITBOX_RADIUS))
         {
             DamagePlayer(game);
@@ -1101,127 +1147,80 @@ static void UpdateEnemyBullets(Game *game, float dt)
 
 static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
 {
+    AttackPatternId active_pattern_id;
+    const AttackPatternDef *pattern;
+
     enemy->age += dt;
     enemy->phase_clock += dt;
     enemy->cooldown -= dt;
     enemy->aux_cooldown -= dt;
 
-    switch (enemy->kind)
+    switch (enemy->movement)
     {
-    case ENEMY_SWEEP:
+    case ENEMY_MOVE_SWEEP_BOUNCE:
         enemy->position.x += enemy->velocity.x * dt;
         enemy->position.y += enemy->velocity.y * dt;
 
-        if (enemy->position.x < game->playfield.x + 26.0f ||
-            enemy->position.x > game->playfield.x + game->playfield.width - 26.0f)
+        if (enemy->position.x < game->playfield.x + enemy->move_param_a ||
+            enemy->position.x > game->playfield.x + game->playfield.width - enemy->move_param_a)
         {
             enemy->velocity.x *= -1.0f;
         }
-
-        if (enemy->cooldown <= 0.0f && enemy->position.y > game->playfield.y + 30.0f)
-        {
-            EmitFan(game, enemy->position, game->player.position, 235.0f, 5, 1.0f, BULLET_RING,
-                    7.0f);
-            enemy->cooldown = ScaleEnemyCooldown(game, 1.15f);
-        }
-
-        if (enemy->age > 8.0f)
-        {
-            enemy->active = false;
-        }
         break;
 
-    case ENEMY_AIMER:
+    case ENEMY_MOVE_AIMER_DRIFT:
         enemy->position.x += enemy->velocity.x * dt;
         enemy->position.y += enemy->velocity.y * dt;
-        enemy->velocity.y = LogicApproach(enemy->velocity.y, 28.0f, 80.0f * dt);
-
-        if (enemy->cooldown <= 0.0f && enemy->position.y > game->playfield.y + 40.0f)
-        {
-            EmitFan(game, enemy->position, game->player.position, 275.0f, 4, 0.72f, BULLET_AIMED,
-                    6.5f);
-            enemy->cooldown = ScaleEnemyCooldown(game, 1.0f);
-        }
-
-        if (enemy->age > 7.0f)
-        {
-            enemy->active = false;
-        }
+        enemy->velocity.y =
+            LogicApproach(enemy->velocity.y, enemy->move_param_a, enemy->move_param_b * dt);
         break;
 
-    case ENEMY_ORBITER:
+    case ENEMY_MOVE_ORBIT_SINE:
         enemy->position.y += enemy->velocity.y * dt;
-        enemy->position.x = enemy->anchor_x + sinf(enemy->age * 1.9f + enemy->aux_cooldown) * 86.0f;
-
-        if (enemy->cooldown <= 0.0f && enemy->position.y > game->playfield.y + 45.0f)
-        {
-            EmitRing(game, enemy->position, 180.0f, 12, enemy->phase_clock * 0.8f, BULLET_WALL,
-                     7.5f);
-            enemy->cooldown = ScaleEnemyCooldown(game, 1.05f);
-        }
-
-        if (enemy->age > 7.8f)
-        {
-            enemy->active = false;
-        }
-        break;
-
-    case ENEMY_BOSS:
-        enemy->position.y =
-            LogicApproach(enemy->position.y, game->playfield.y + 165.0f, 120.0f * dt);
         enemy->position.x =
-            game->playfield.x + game->playfield.width * 0.5f + sinf(enemy->age * 0.72f) * 158.0f;
-
-        if (enemy->hp > 220)
-        {
-            if (enemy->cooldown <= 0.0f)
-            {
-                EmitRing(game, enemy->position, 185.0f, 18, enemy->phase_clock * 0.6f, BULLET_RING,
-                         7.0f);
-                EmitRing(game, enemy->position, 270.0f, 9, -enemy->phase_clock * 0.85f,
-                         BULLET_AIMED, 5.5f);
-                enemy->cooldown = ScaleEnemyCooldown(game, 0.72f);
-            }
-        }
-        else if (enemy->hp > 120)
-        {
-            if (enemy->cooldown <= 0.0f)
-            {
-                EmitFan(game, enemy->position, game->player.position, 310.0f, 9, 1.35f,
-                        BULLET_AIMED, 6.0f);
-                enemy->cooldown = ScaleEnemyCooldown(game, 0.56f);
-            }
-
-            if (enemy->aux_cooldown <= 0.0f)
-            {
-                EmitCurtain(game, enemy->position, game->playfield.x + game->playfield.width * 0.5f,
-                            game->playfield.width - 84.0f, 220.0f, 10);
-                enemy->aux_cooldown = ScaleEnemyCooldown(game, 1.6f);
-            }
-        }
-        else
-        {
-            if (enemy->cooldown <= 0.0f)
-            {
-                for (int i = 0; i < 4; ++i)
-                {
-                    float angle = enemy->phase_clock * 3.8f + ((float)i * TAU / 4.0f);
-                    SpawnEnemyBullet(game, BULLET_SPIRAL, enemy->position,
-                                     ToVector(LogicPolar(angle, 240.0f)), 6.5f);
-                    SpawnEnemyBullet(game, BULLET_SPIRAL, enemy->position,
-                                     ToVector(LogicPolar(-angle, 240.0f)), 6.5f);
-                }
-                enemy->cooldown = ScaleEnemyCooldown(game, 0.09f);
-            }
-
-            if (enemy->aux_cooldown <= 0.0f)
-            {
-                EmitFan(game, enemy->position, game->player.position, 340.0f, 11, 1.7f, BULLET_WALL,
-                        7.0f);
-                enemy->aux_cooldown = ScaleEnemyCooldown(game, 1.05f);
-            }
-        }
+            enemy->anchor_x +
+            sinf(enemy->age * enemy->move_param_b + enemy->move_param_c) * enemy->move_param_a;
         break;
+
+    case ENEMY_MOVE_BOSS_CORE:
+        enemy->position.y =
+            LogicApproach(enemy->position.y, game->playfield.y + enemy->move_param_a, 120.0f * dt);
+        enemy->position.x = game->playfield.x + game->playfield.width * 0.5f +
+                            sinf(enemy->age * enemy->move_param_c) * enemy->move_param_b;
+        break;
+    }
+
+    active_pattern_id = GetEnemyActivePattern(enemy);
+    pattern = StageGetAttackPattern(active_pattern_id);
+
+    if (pattern != NULL)
+    {
+        if (pattern->primary.type != ATTACK_EMITTER_NONE && enemy->cooldown <= 0.0f &&
+            enemy->position.y > game->playfield.y + enemy->attack_start_y)
+        {
+            EmitAttackEmitter(game, enemy, &pattern->primary);
+
+            if (pattern->secondary.type != ATTACK_EMITTER_NONE &&
+                !pattern->secondary_uses_aux_timer)
+            {
+                EmitAttackEmitter(game, enemy, &pattern->secondary);
+            }
+
+            enemy->cooldown = ScaleEnemyCooldown(game, pattern->cooldown);
+        }
+
+        if (pattern->secondary.type != ATTACK_EMITTER_NONE && pattern->secondary_uses_aux_timer &&
+            enemy->aux_cooldown <= 0.0f &&
+            enemy->position.y > game->playfield.y + enemy->attack_start_y)
+        {
+            EmitAttackEmitter(game, enemy, &pattern->secondary);
+            enemy->aux_cooldown = ScaleEnemyCooldown(game, pattern->secondary_cooldown);
+        }
+    }
+
+    if (enemy->lifetime > 0.0f && enemy->age > enemy->lifetime)
+    {
+        enemy->active = false;
     }
 
     if (!IsInsideExtendedPlayfield(enemy->position, 120.0f) && enemy->kind != ENEMY_BOSS)
@@ -1388,7 +1387,7 @@ void GameUpdate(Game *game, float dt)
     }
 
     game->stage_time += dt;
-    RunStageScript(game);
+    ProcessStageCues(game);
     UpdatePlayer(game, dt);
     UpdateEnemies(game, dt);
     UpdatePlayerBullets(game, dt);

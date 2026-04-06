@@ -50,6 +50,27 @@ typedef enum Difficulty
     DIFFICULTY_EXPERT
 } Difficulty;
 
+typedef enum EnemyMovementModel
+{
+    ENEMY_MOVE_SWEEP_BOUNCE = 0,
+    ENEMY_MOVE_AIMER_DRIFT,
+    ENEMY_MOVE_ORBIT_SINE,
+    ENEMY_MOVE_BOSS_CORE
+} EnemyMovementModel;
+
+typedef enum AttackPatternId
+{
+    ATTACK_PATTERN_NONE = 0,
+    ATTACK_PATTERN_SWEEP_FAN_RING,
+    ATTACK_PATTERN_AIMER_FAN_AIMED,
+    ATTACK_PATTERN_ORBITER_RING_WALL,
+    ATTACK_PATTERN_BOSS_PHASE_ONE,
+    ATTACK_PATTERN_BOSS_PHASE_TWO,
+    ATTACK_PATTERN_BOSS_PHASE_THREE
+} AttackPatternId;
+
+struct StageDef;
+
 typedef struct Player
 {
     Vector2 position;
@@ -67,16 +88,26 @@ typedef struct Enemy
 {
     bool active;
     EnemyKind kind;
+    EnemyMovementModel movement;
     Vector2 position;
     Vector2 velocity;
     float radius;
     int hp;
     int max_hp;
+    int phase_thresholds[2];
     float cooldown;
     float aux_cooldown;
     float age;
     float phase_clock;
     float anchor_x;
+    float collision_scale;
+    float lifetime;
+    float attack_start_y;
+    float move_param_a;
+    float move_param_b;
+    float move_param_c;
+    unsigned int reward;
+    AttackPatternId phase_patterns[3];
 } Enemy;
 
 typedef struct Bullet
@@ -105,13 +136,13 @@ typedef struct Game
 {
     GameMode mode;
     Difficulty difficulty;
+    const struct StageDef *stage;
     Rectangle playfield;
     Player player;
     Enemy enemies[MAX_ENEMIES];
     Bullet player_bullets[MAX_PLAYER_BULLETS];
     Bullet enemy_bullets[MAX_ENEMY_BULLETS];
     Particle particles[MAX_PARTICLES];
-    bool script_flags[16];
     bool boss_spawned;
     bool boss_defeated;
     bool debug_invulnerable;
@@ -121,6 +152,7 @@ typedef struct Game
     float stage_time;
     float state_time;
     float clear_timer;
+    int next_stage_cue;
     float status_timer;
     char status_message[64];
     char cheat_buffer[32];
