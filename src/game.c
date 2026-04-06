@@ -1639,24 +1639,29 @@ static void DrawTitleOverlay(const Game *game)
 {
     float pulse = 0.5f + 0.5f * sinf(game->state_time * 2.2f);
     Color text_color = ColorAlpha(COLOR_PLAYER, 0.8f + 0.2f * pulse);
+    bool show_debug =
+        game->debug_invulnerable || game->debug_infinite_lives || game->debug_start_at_boss;
+    int panel_x = (int)game->playfield.x + 48;
+    int panel_y = (int)game->playfield.y + 210;
+    int panel_height = show_debug ? 388 : 348;
+    int text_x = PLAYFIELD_X + 72;
 
-    DrawRectangle((int)game->playfield.x + 48, (int)game->playfield.y + 210, PLAYFIELD_WIDTH - 96,
-                  348, Fade(COLOR_PANEL, 0.78f));
-    DrawText("ABSTRACT MINIMALIST", PLAYFIELD_X + 88, PLAYFIELD_Y + 250, 20, COLOR_PLAYER_ACCENT);
-    DrawText("VERTICAL BULLET HELL", PLAYFIELD_X + 88, PLAYFIELD_Y + 282, 36, text_color);
-    DrawText("graze bullets / survive the stage / break the core", PLAYFIELD_X + 88,
-             PLAYFIELD_Y + 334, 22, ColorAlpha(COLOR_PLAYER, 0.65f));
-    DrawText("DIFFICULTY", PLAYFIELD_X + 88, PLAYFIELD_Y + 390, 20,
+    DrawRectangle(panel_x, panel_y, PLAYFIELD_WIDTH - 96, panel_height, Fade(COLOR_PANEL, 0.78f));
+    DrawText("ABSTRACT MINIMALIST", text_x, PLAYFIELD_Y + 250, 20, COLOR_PLAYER_ACCENT);
+    DrawText("VERTICAL BULLET HELL", text_x, PLAYFIELD_Y + 282, 32, text_color);
+    DrawText("graze bullets / survive the stage", text_x, PLAYFIELD_Y + 334, 18,
              ColorAlpha(COLOR_PLAYER, 0.65f));
-    DrawText("[1] CASUAL  [2] STANDARD  [3] EXPERT", PLAYFIELD_X + 88, PLAYFIELD_Y + 418, 24,
-             COLOR_PLAYER);
-    DrawText(TextFormat("CURRENT: %s", DifficultyLabel(game->difficulty)), PLAYFIELD_X + 88,
-             PLAYFIELD_Y + 452, 24, DifficultyColor(game->difficulty));
-    DrawText("PRESS ENTER", PLAYFIELD_X + 88, PLAYFIELD_Y + 496, 28, text_color);
+    DrawText("break the core", text_x, PLAYFIELD_Y + 358, 18, ColorAlpha(COLOR_PLAYER, 0.65f));
+    DrawText("DIFFICULTY", text_x, PLAYFIELD_Y + 402, 20, ColorAlpha(COLOR_PLAYER, 0.65f));
+    DrawText("[1] CASUAL  [2] STANDARD", text_x, PLAYFIELD_Y + 430, 20, COLOR_PLAYER);
+    DrawText("[3] EXPERT", text_x, PLAYFIELD_Y + 456, 20, COLOR_PLAYER);
+    DrawText(TextFormat("CURRENT: %s", DifficultyLabel(game->difficulty)), text_x,
+             PLAYFIELD_Y + 490, 24, DifficultyColor(game->difficulty));
+    DrawText("PRESS ENTER", text_x, PLAYFIELD_Y + 528, 28, text_color);
 
-    if (game->debug_invulnerable || game->debug_infinite_lives || game->debug_start_at_boss)
+    if (show_debug)
     {
-        DrawText("DEBUG MODIFIERS ACTIVE", PLAYFIELD_X + 88, PLAYFIELD_Y + 534, 18, COLOR_MISSILE);
+        DrawText("DEBUG MODIFIERS ACTIVE", text_x, PLAYFIELD_Y + 566, 18, COLOR_MISSILE);
     }
 }
 
