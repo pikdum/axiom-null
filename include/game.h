@@ -114,6 +114,7 @@ typedef struct Enemy
     float move_param_b;
     float move_param_c;
     unsigned int reward;
+    AttackPatternId active_pattern;
     AttackPatternId phase_patterns[3];
 } Enemy;
 

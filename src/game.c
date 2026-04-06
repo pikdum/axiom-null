@@ -714,6 +714,7 @@ static void SpawnEnemyFromArchetype(Game *game, const WaveSpawnDef *spawn)
     {
         enemy->phase_patterns[i] = archetype->phase_patterns[i];
     }
+    enemy->active_pattern = enemy->phase_patterns[0];
     enemy->phase_thresholds[0] = (int)((float)enemy->max_hp * archetype->phase_ratios[0]);
     enemy->phase_thresholds[1] = (int)((float)enemy->max_hp * archetype->phase_ratios[1]);
 
@@ -1339,6 +1340,7 @@ static bool HasChargingBeams(const Game *game)
 static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
 {
     AttackPatternId active_pattern_id;
+    AttackPatternId previous_pattern_id;
     const AttackPatternDef *pattern;
 
     enemy->age += dt;
@@ -1392,7 +1394,16 @@ static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
         break;
     }
 
+    previous_pattern_id = enemy->active_pattern;
     active_pattern_id = GetEnemyActivePattern(enemy);
+    if (enemy->kind == ENEMY_BOSS && previous_pattern_id != ATTACK_PATTERN_NONE &&
+        active_pattern_id != previous_pattern_id)
+    {
+        SpawnBurst(game, enemy->position, COLOR_SPIRAL, 26, 210.0f);
+        SpawnBurst(game, enemy->position, COLOR_PLAYER_ACCENT, 14, 160.0f);
+        AudioPlaySfx(AUDIO_SFX_BOSS_PHASE);
+    }
+    enemy->active_pattern = active_pattern_id;
     pattern = StageGetAttackPattern(active_pattern_id);
 
     if (pattern != NULL)
