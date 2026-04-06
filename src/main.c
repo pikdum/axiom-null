@@ -17,15 +17,15 @@ int main(void)
         GameUpdate(&game, GetFrameTime());
         if (game.mode == GAME_MODE_TITLE)
         {
-            AudioUpdateMusic(AUDIO_MUSIC_TITLE);
+            AudioUpdate(AUDIO_MUSIC_TITLE);
         }
         else if (game.mode == GAME_MODE_PLAYING && game.boss_spawned && !game.boss_defeated)
         {
-            AudioUpdateMusic(AUDIO_MUSIC_BOSS);
+            AudioUpdate(AUDIO_MUSIC_BOSS);
         }
         else
         {
-            AudioUpdateMusic(AUDIO_MUSIC_STAGE);
+            AudioUpdate(AUDIO_MUSIC_STAGE);
         }
 
         BeginDrawing();

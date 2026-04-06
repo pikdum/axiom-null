@@ -30,6 +30,7 @@ typedef enum AudioMusic
 bool AudioInit(void);
 void AudioShutdown(void);
 void AudioPlaySfx(AudioSfx sfx);
-void AudioUpdateMusic(AudioMusic music);
+void AudioSetLaserHumActive(bool active);
+void AudioUpdate(AudioMusic music);
 
 #endif

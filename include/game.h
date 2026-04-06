@@ -169,6 +169,7 @@ typedef struct Game
     bool debug_invulnerable;
     bool debug_infinite_lives;
     bool debug_start_at_boss;
+    int debug_stage_override;
     unsigned int score;
     float stage_time;
     float state_time;

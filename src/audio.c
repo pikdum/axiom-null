@@ -13,8 +13,12 @@ typedef struct AudioState
     bool sounds_loaded[AUDIO_SFX_COUNT];
     Music music[AUDIO_MUSIC_COUNT];
     bool music_loaded[AUDIO_MUSIC_COUNT];
+    Music laser_hum;
+    bool laser_hum_loaded;
     AudioMusic current_music;
     bool music_playing;
+    bool laser_hum_active;
+    bool laser_hum_playing;
 } AudioState;
 
 static AudioState g_audio = {0};
@@ -154,6 +158,8 @@ static const char *ResolveAudioAssetRoot(void)
     return asset_root;
 }
 
+static const char *AudioLaserHumFile(void) { return "laser_hum.wav"; }
+
 bool AudioInit(void)
 {
     const char *asset_root;
@@ -201,6 +207,21 @@ bool AudioInit(void)
         SetMusicVolume(g_audio.music[i], AudioMusicVolume((AudioMusic)i));
     }
 
+    {
+        const char *path = TextFormat("%s/sfx/%s", asset_root, AudioLaserHumFile());
+
+        if (!AudioFileExists(path))
+        {
+            TraceLog(LOG_WARNING, "AUDIO: missing laser hum file: %s", path);
+        }
+        else
+        {
+            g_audio.laser_hum = LoadMusicStream(path);
+            g_audio.laser_hum_loaded = true;
+            SetMusicVolume(g_audio.laser_hum, 0.26f);
+        }
+    }
+
     SetMasterVolume(0.85f);
     g_audio.current_music = AUDIO_MUSIC_COUNT;
     g_audio.music_playing = false;
@@ -231,6 +252,11 @@ void AudioShutdown(void)
         }
     }
 
+    if (g_audio.laser_hum_loaded)
+    {
+        UnloadMusicStream(g_audio.laser_hum);
+    }
+
     CloseAudioDevice();
     memset(&g_audio, 0, sizeof(g_audio));
 }
@@ -248,7 +274,17 @@ void AudioPlaySfx(AudioSfx sfx)
     }
 }
 
-void AudioUpdateMusic(AudioMusic music)
+void AudioSetLaserHumActive(bool active)
+{
+    if (!g_audio.initialized)
+    {
+        return;
+    }
+
+    g_audio.laser_hum_active = active;
+}
+
+void AudioUpdate(AudioMusic music)
 {
     if (!g_audio.initialized || music < 0 || music >= AUDIO_MUSIC_COUNT)
     {
@@ -274,4 +310,23 @@ void AudioUpdateMusic(AudioMusic music)
     }
 
     UpdateMusicStream(g_audio.music[g_audio.current_music]);
+
+    if (g_audio.laser_hum_loaded)
+    {
+        if (g_audio.laser_hum_active)
+        {
+            if (!g_audio.laser_hum_playing)
+            {
+                PlayMusicStream(g_audio.laser_hum);
+                g_audio.laser_hum_playing = true;
+            }
+
+            UpdateMusicStream(g_audio.laser_hum);
+        }
+        else if (g_audio.laser_hum_playing)
+        {
+            StopMusicStream(g_audio.laser_hum);
+            g_audio.laser_hum_playing = false;
+        }
+    }
 }

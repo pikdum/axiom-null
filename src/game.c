@@ -30,6 +30,7 @@ static const Color COLOR_AIMER = {105, 232, 215, 255};
 static const Color COLOR_ORBIT = {250, 227, 143, 255};
 static const Color COLOR_SENTINEL = {255, 168, 110, 255};
 static const Color COLOR_BOSS = {232, 237, 244, 255};
+static const Color COLOR_LASER_LIVE = {255, 72, 72, 255};
 
 static const char *DifficultyLabel(Difficulty difficulty)
 {
@@ -192,6 +193,18 @@ static const char *StageHudLabel(const Game *game)
     if (game->stage != NULL && game->stage->hud_label != NULL)
     {
         return game->stage->hud_label;
+    }
+
+    return "ONE";
+}
+
+static const char *DebugStageOverrideLabel(const Game *game)
+{
+    const StageDef *stage = StageGetById((StageId)game->debug_stage_override);
+
+    if (stage != NULL && stage->hud_label != NULL)
+    {
+        return stage->hud_label;
     }
 
     return "ONE";
@@ -459,14 +472,22 @@ static void ResetRun(Game *game)
     bool debug_invulnerable = game->debug_invulnerable;
     bool debug_infinite_lives = game->debug_infinite_lives;
     bool debug_start_at_boss = game->debug_start_at_boss;
+    int debug_stage_override = game->debug_stage_override;
+    const StageDef *start_stage = StageGetById((StageId)debug_stage_override);
+
+    if (start_stage == NULL)
+    {
+        start_stage = StageGetDefault();
+    }
 
     memset(game, 0, sizeof(*game));
     game->playfield = playfield;
-    game->stage = StageGetDefault();
+    game->stage = start_stage;
     game->difficulty = difficulty;
     game->debug_invulnerable = debug_invulnerable;
     game->debug_infinite_lives = debug_infinite_lives;
     game->debug_start_at_boss = debug_start_at_boss;
+    game->debug_stage_override = debug_stage_override;
     game->mode = GAME_MODE_PLAYING;
     game->player.position = (Vector2){
         .x = playfield.x + playfield.width * 0.5f,
@@ -1294,6 +1315,19 @@ static void UpdateBeams(Game *game, float dt)
     }
 }
 
+static bool HasChargingBeams(const Game *game)
+{
+    for (int i = 0; i < MAX_BEAMS; ++i)
+    {
+        if (game->beams[i].active && !game->beams[i].harmful)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static void UpdateEnemy(Game *game, Enemy *enemy, float dt)
 {
     AttackPatternId active_pattern_id;
@@ -1421,7 +1455,7 @@ static void UpdateTitleCheats(Game *game)
 
     while (pressed > 0)
     {
-        if (isalpha(pressed))
+        if (isalnum(pressed))
         {
             if (game->cheat_length >= (int)sizeof(game->cheat_buffer) - 1)
             {
@@ -1429,7 +1463,8 @@ static void UpdateTitleCheats(Game *game)
                 game->cheat_length = (int)sizeof(game->cheat_buffer) - 2;
             }
 
-            game->cheat_buffer[game->cheat_length++] = (char)tolower(pressed);
+            game->cheat_buffer[game->cheat_length++] =
+                (char)(isalpha(pressed) ? tolower(pressed) : pressed);
             game->cheat_buffer[game->cheat_length] = '\0';
 
             if (CheatBufferEndsWith(game, "ghost"))
@@ -1453,6 +1488,20 @@ static void UpdateTitleCheats(Game *game)
                 game->debug_start_at_boss = !game->debug_start_at_boss;
                 SetStatusMessage(game, game->debug_start_at_boss ? "CHEAT: PHASE ON"
                                                                  : "CHEAT: PHASE OFF");
+                game->cheat_length = 0;
+                game->cheat_buffer[0] = '\0';
+            }
+            else if (CheatBufferEndsWith(game, "stage1"))
+            {
+                game->debug_stage_override = STAGE_ONE;
+                SetStatusMessage(game, "CHEAT: START AT STAGE ONE");
+                game->cheat_length = 0;
+                game->cheat_buffer[0] = '\0';
+            }
+            else if (CheatBufferEndsWith(game, "stage2"))
+            {
+                game->debug_stage_override = STAGE_TWO;
+                SetStatusMessage(game, "CHEAT: START AT STAGE TWO");
                 game->cheat_length = 0;
                 game->cheat_buffer[0] = '\0';
             }
@@ -1524,12 +1573,14 @@ void GameUpdate(Game *game, float dt)
 
     if (game->mode == GAME_MODE_TITLE)
     {
+        AudioSetLaserHumActive(false);
         UpdateTitle(game);
         return;
     }
 
     if (game->mode == GAME_MODE_GAME_OVER || game->mode == GAME_MODE_CLEAR)
     {
+        AudioSetLaserHumActive(false);
         if (game->mode == GAME_MODE_CLEAR)
         {
             Enemy *boss = FindBoss(game);
@@ -1553,6 +1604,7 @@ void GameUpdate(Game *game, float dt)
     UpdatePlayerBullets(game, dt);
     UpdateEnemyBullets(game, dt);
     UpdateBeams(game, dt);
+    AudioSetLaserHumActive(HasChargingBeams(game));
 
     if (game->boss_defeated)
     {
@@ -1768,16 +1820,19 @@ static void DrawBeams(const Game *game)
         {
             DrawRectangle((int)(beam->x - beam->telegraph_width), (int)beam->origin_y,
                           (int)(beam->telegraph_width * 2.0f), (int)height,
-                          ColorAlpha(COLOR_WALL, 0.18f + 0.12f * pulse));
+                          ColorAlpha(COLOR_WALL, 0.14f + 0.1f * pulse));
             DrawLineEx((Vector2){beam->x, beam->origin_y}, (Vector2){beam->x, playfield_bottom},
                        beam->telegraph_width, ColorAlpha(COLOR_PLAYER, 0.8f));
         }
         else
         {
             DrawRectangle((int)(beam->x - beam->width), (int)beam->origin_y,
-                          (int)(beam->width * 2.0f), (int)height, ColorAlpha(COLOR_MISSILE, 0.3f));
+                          (int)(beam->width * 2.0f), (int)height,
+                          ColorAlpha(COLOR_LASER_LIVE, 0.34f));
             DrawRectangle((int)(beam->x - beam->width * 0.45f), (int)beam->origin_y,
                           (int)(beam->width * 0.9f), (int)height, COLOR_PLAYER);
+            DrawLineEx((Vector2){beam->x, beam->origin_y}, (Vector2){beam->x, playfield_bottom},
+                       beam->width * 1.15f, ColorAlpha(COLOR_LASER_LIVE, 0.85f));
         }
     }
 }
@@ -1848,7 +1903,8 @@ static void DrawHud(const Game *game)
         DrawRectangleLinesEx(frame, 2.0f, COLOR_PANEL_LINE);
     }
 
-    if (game->debug_invulnerable || game->debug_infinite_lives || game->debug_start_at_boss)
+    if (game->debug_invulnerable || game->debug_infinite_lives || game->debug_start_at_boss ||
+        game->debug_stage_override != STAGE_ONE)
     {
         int debug_y = 584;
         DrawText("DEBUG", right_x, debug_y, 18, ColorAlpha(COLOR_PLAYER, 0.7f));
@@ -1865,6 +1921,12 @@ static void DrawHud(const Game *game)
         if (game->debug_start_at_boss)
         {
             DrawText("PHASE", right_x, debug_y + 28, 18, COLOR_MISSILE);
+            debug_y += 28;
+        }
+        if (game->debug_stage_override != STAGE_ONE)
+        {
+            DrawText(TextFormat("STAGE %s", DebugStageOverrideLabel(game)), right_x, debug_y + 28,
+                     18, COLOR_WALL);
         }
     }
 }
@@ -1873,11 +1935,11 @@ static void DrawTitleOverlay(const Game *game)
 {
     float pulse = 0.5f + 0.5f * sinf(game->state_time * 2.2f);
     Color text_color = ColorAlpha(COLOR_PLAYER, 0.8f + 0.2f * pulse);
-    bool show_debug =
-        game->debug_invulnerable || game->debug_infinite_lives || game->debug_start_at_boss;
+    bool show_debug = game->debug_invulnerable || game->debug_infinite_lives ||
+                      game->debug_start_at_boss || game->debug_stage_override != STAGE_ONE;
     int panel_x = (int)game->playfield.x + 48;
     int panel_y = (int)game->playfield.y + 210;
-    int panel_height = show_debug ? 388 : 348;
+    int panel_height = show_debug ? (game->debug_stage_override != STAGE_ONE ? 414 : 388) : 348;
     int text_x = PLAYFIELD_X + 72;
 
     DrawRectangle(panel_x, panel_y, PLAYFIELD_WIDTH - 96, panel_height, Fade(COLOR_PANEL, 0.78f));
@@ -1896,6 +1958,11 @@ static void DrawTitleOverlay(const Game *game)
     if (show_debug)
     {
         DrawText("DEBUG MODIFIERS ACTIVE", text_x, PLAYFIELD_Y + 566, 18, COLOR_MISSILE);
+        if (game->debug_stage_override != STAGE_ONE)
+        {
+            DrawText(TextFormat("START STAGE %s", DebugStageOverrideLabel(game)), text_x,
+                     PLAYFIELD_Y + 592, 18, COLOR_WALL);
+        }
     }
 }
 
