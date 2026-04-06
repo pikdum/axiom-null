@@ -584,10 +584,11 @@ static void EmitSpiralBurst(Game *game, Vector2 position, float speed, int count
     }
 }
 
-static void StartLaserVolley(Game *game, Vector2 origin, int count, float span, float width,
-                             float charge_time, float active_time)
+static void StartLaserVolley(Game *game, const Enemy *source, Vector2 origin, int count, float span,
+                             float width, float charge_time, float active_time)
 {
     bool any_spawned = false;
+    int owner_index = source != NULL ? (int)(source - game->enemies) : -1;
 
     for (int i = 0; i < count; ++i)
     {
@@ -603,8 +604,11 @@ static void StartLaserVolley(Game *game, Vector2 origin, int count, float span, 
         beam->active = true;
         beam->harmful = false;
         beam->play_fire_sfx = !any_spawned;
+        beam->track_source = source != NULL;
+        beam->owner_index = owner_index;
         beam->x = LogicClamp(x, game->playfield.x + 24.0f,
                              game->playfield.x + game->playfield.width - 24.0f);
+        beam->x_offset = x - origin.x;
         beam->origin_y = LogicClamp(origin.y, game->playfield.y + 12.0f,
                                     game->playfield.y + game->playfield.height - 12.0f);
         beam->telegraph_width = LogicClamp(width * 0.28f, 2.5f, 5.0f);
@@ -643,7 +647,7 @@ static void EmitAttackEmitter(Game *game, Enemy *enemy, const AttackEmitterDef *
                         emitter->radius, emitter->bullet_kind, enemy->phase_clock);
         break;
     case ATTACK_EMITTER_VERTICAL_LASER:
-        StartLaserVolley(game, enemy->position, DifficultyPatternCount(game, emitter->count),
+        StartLaserVolley(game, enemy, enemy->position, DifficultyPatternCount(game, emitter->count),
                          emitter->spread_or_width, emitter->radius,
                          emitter->charge_time * DifficultyCooldownScale(game),
                          emitter->active_time);
@@ -1285,10 +1289,22 @@ static void UpdateBeams(Game *game, float dt)
 
         if (!beam->harmful)
         {
+            if (beam->track_source && beam->owner_index >= 0 && beam->owner_index < MAX_ENEMIES &&
+                game->enemies[beam->owner_index].active)
+            {
+                const Enemy *source = &game->enemies[beam->owner_index];
+
+                beam->x = LogicClamp(source->position.x + beam->x_offset, game->playfield.x + 24.0f,
+                                     game->playfield.x + game->playfield.width - 24.0f);
+                beam->origin_y = LogicClamp(source->position.y, game->playfield.y + 12.0f,
+                                            game->playfield.y + game->playfield.height - 12.0f);
+            }
+
             beam->charge_timer -= dt;
             if (beam->charge_timer <= 0.0f)
             {
                 beam->harmful = true;
+                beam->track_source = false;
                 if (beam->play_fire_sfx)
                 {
                     AudioPlaySfx(AUDIO_SFX_LASER_FIRE);

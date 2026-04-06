@@ -144,7 +144,10 @@ typedef struct Beam
     bool active;
     bool harmful;
     bool play_fire_sfx;
+    bool track_source;
+    int owner_index;
     float x;
+    float x_offset;
     float origin_y;
     float telegraph_width;
     float width;
