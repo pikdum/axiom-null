@@ -13,10 +13,10 @@ CFLAGS += $(WARNINGS) -Iinclude
 RAYLIB_CFLAGS := $(shell pkg-config --cflags raylib 2>/dev/null)
 RAYLIB_LIBS := $(shell pkg-config --libs raylib 2>/dev/null)
 
-GAME_SRCS := src/main.c src/game.c src/logic.c
+GAME_SRCS := src/main.c src/game.c src/logic.c src/audio.c
 TEST_SRCS := tests/test_logic.c src/logic.c
-FORMAT_FILES := include/game.h include/logic.h src/main.c src/game.c src/logic.c tests/test_logic.c
-LINT_SRCS := src/main.c src/game.c src/logic.c tests/test_logic.c
+FORMAT_FILES := include/audio.h include/game.h include/logic.h src/audio.c src/main.c src/game.c src/logic.c tests/test_logic.c
+LINT_SRCS := src/audio.c src/main.c src/game.c src/logic.c tests/test_logic.c
 
 .PHONY: all game test check fmt fmt-check compile-commands lint run clean
 
@@ -27,7 +27,7 @@ $(BUILD_DIR):
 
 game: $(GAME)
 
-$(GAME): $(GAME_SRCS) include/game.h include/logic.h | $(BUILD_DIR)
+$(GAME): $(GAME_SRCS) include/audio.h include/game.h include/logic.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(RAYLIB_CFLAGS) $(GAME_SRCS) -o $@ $(RAYLIB_LIBS) -lm
 
 test: $(TEST)

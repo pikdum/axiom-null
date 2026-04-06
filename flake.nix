@@ -42,7 +42,9 @@
 
           installPhase = ''
             mkdir -p $out/bin
+            mkdir -p $out/share/axiom-null/assets
             install -m755 build/game $out/bin/axiom-null
+            cp -r assets/audio $out/share/axiom-null/assets/
           '';
         };
       });

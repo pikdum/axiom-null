@@ -1,3 +1,4 @@
+#include "audio.h"
 #include "game.h"
 
 #include <ctype.h>
@@ -527,6 +528,7 @@ static void SpawnBoss(Game *game)
     if (boss != NULL)
     {
         game->boss_spawned = true;
+        AudioPlaySfx(AUDIO_SFX_BOSS_ALERT);
         ClearEnemyBullets(game);
 
         for (int i = 0; i < MAX_ENEMIES; ++i)
@@ -678,6 +680,7 @@ static void SpawnMissile(Game *game)
     bullet->grazed = false;
 
     SpawnParticle(game, origin, (Vector2){0.0f, 60.0f}, 4.0f, 0.22f, COLOR_MISSILE);
+    AudioPlaySfx(AUDIO_SFX_PLAYER_MISSILE);
 }
 
 static void UseBomb(Game *game)
@@ -695,6 +698,7 @@ static void UseBomb(Game *game)
     }
     game->score += 250;
 
+    AudioPlaySfx(AUDIO_SFX_BOMB);
     ClearEnemyBullets(game);
     SpawnBurst(game, game->player.position, COLOR_MISSILE, 28, 210.0f);
 
@@ -748,6 +752,7 @@ static void DamagePlayer(Game *game)
         return;
     }
 
+    AudioPlaySfx(AUDIO_SFX_PLAYER_DEATH);
     SpawnBurst(game, game->player.position, COLOR_PLAYER_ACCENT, 18, 200.0f);
 
     if (!game->debug_infinite_lives)
@@ -834,6 +839,7 @@ static void UpdatePlayer(Game *game, float dt)
     if (game->player.shot_timer <= 0.0f)
     {
         game->player.shot_timer += focus ? 0.08f : 0.09f;
+        AudioPlaySfx(AUDIO_SFX_PLAYER_SHOT);
 
         if (focus)
         {
@@ -922,6 +928,7 @@ static void DestroyEnemy(Game *game, Enemy *enemy)
     }
 
     game->score += reward;
+    AudioPlaySfx(enemy->kind == ENEMY_BOSS ? AUDIO_SFX_STAGE_CLEAR : AUDIO_SFX_ENEMY_DESTROY);
     SpawnBurst(game, enemy->position, color, enemy->kind == ENEMY_BOSS ? 42 : 16,
                enemy->kind == ENEMY_BOSS ? 240.0f : 160.0f);
     enemy->active = false;
@@ -1309,16 +1316,19 @@ static void UpdateTitle(Game *game)
     if (IsKeyPressed(KEY_ONE) || IsKeyPressed(KEY_KP_1))
     {
         game->difficulty = DIFFICULTY_CASUAL;
+        AudioPlaySfx(AUDIO_SFX_MENU_MOVE);
         SetStatusMessage(game, "DIFFICULTY: CASUAL");
     }
     else if (IsKeyPressed(KEY_TWO) || IsKeyPressed(KEY_KP_2))
     {
         game->difficulty = DIFFICULTY_STANDARD;
+        AudioPlaySfx(AUDIO_SFX_MENU_MOVE);
         SetStatusMessage(game, "DIFFICULTY: STANDARD");
     }
     else if (IsKeyPressed(KEY_THREE) || IsKeyPressed(KEY_KP_3))
     {
         game->difficulty = DIFFICULTY_EXPERT;
+        AudioPlaySfx(AUDIO_SFX_MENU_MOVE);
         SetStatusMessage(game, "DIFFICULTY: EXPERT");
     }
 
@@ -1326,16 +1336,19 @@ static void UpdateTitle(Game *game)
     {
         game->difficulty =
             (Difficulty)((game->difficulty + DIFFICULTY_EXPERT) % (DIFFICULTY_EXPERT + 1));
+        AudioPlaySfx(AUDIO_SFX_MENU_MOVE);
         SetStatusMessage(game, TextFormat("DIFFICULTY: %s", DifficultyLabel(game->difficulty)));
     }
     else if (IsKeyPressed(KEY_RIGHT))
     {
         game->difficulty = (Difficulty)((game->difficulty + 1) % (DIFFICULTY_EXPERT + 1));
+        AudioPlaySfx(AUDIO_SFX_MENU_MOVE);
         SetStatusMessage(game, TextFormat("DIFFICULTY: %s", DifficultyLabel(game->difficulty)));
     }
 
     if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE))
     {
+        AudioPlaySfx(AUDIO_SFX_MENU_SELECT);
         ResetRun(game);
     }
 }
