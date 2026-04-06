@@ -15,6 +15,7 @@
 #define MAX_ENEMIES 64
 #define MAX_PLAYER_BULLETS 256
 #define MAX_ENEMY_BULLETS 1536
+#define MAX_BEAMS 64
 #define MAX_PARTICLES 512
 
 typedef enum GameMode
@@ -30,6 +31,7 @@ typedef enum EnemyKind
     ENEMY_SWEEP = 0,
     ENEMY_AIMER,
     ENEMY_ORBITER,
+    ENEMY_SENTINEL,
     ENEMY_BOSS
 } EnemyKind;
 
@@ -55,6 +57,7 @@ typedef enum EnemyMovementModel
     ENEMY_MOVE_SWEEP_BOUNCE = 0,
     ENEMY_MOVE_AIMER_DRIFT,
     ENEMY_MOVE_ORBIT_SINE,
+    ENEMY_MOVE_SENTINEL_HOLD,
     ENEMY_MOVE_BOSS_CORE
 } EnemyMovementModel;
 
@@ -64,9 +67,13 @@ typedef enum AttackPatternId
     ATTACK_PATTERN_SWEEP_FAN_RING,
     ATTACK_PATTERN_AIMER_FAN_AIMED,
     ATTACK_PATTERN_ORBITER_RING_WALL,
+    ATTACK_PATTERN_SENTINEL_LASER,
     ATTACK_PATTERN_BOSS_PHASE_ONE,
     ATTACK_PATTERN_BOSS_PHASE_TWO,
-    ATTACK_PATTERN_BOSS_PHASE_THREE
+    ATTACK_PATTERN_BOSS_PHASE_THREE,
+    ATTACK_PATTERN_ARRAY_BOSS_PHASE_ONE,
+    ATTACK_PATTERN_ARRAY_BOSS_PHASE_TWO,
+    ATTACK_PATTERN_ARRAY_BOSS_PHASE_THREE
 } AttackPatternId;
 
 struct StageDef;
@@ -132,6 +139,19 @@ typedef struct Particle
     Color color;
 } Particle;
 
+typedef struct Beam
+{
+    bool active;
+    bool harmful;
+    bool play_fire_sfx;
+    float x;
+    float origin_y;
+    float telegraph_width;
+    float width;
+    float charge_timer;
+    float active_timer;
+} Beam;
+
 typedef struct Game
 {
     GameMode mode;
@@ -142,6 +162,7 @@ typedef struct Game
     Enemy enemies[MAX_ENEMIES];
     Bullet player_bullets[MAX_PLAYER_BULLETS];
     Bullet enemy_bullets[MAX_ENEMY_BULLETS];
+    Beam beams[MAX_BEAMS];
     Particle particles[MAX_PARTICLES];
     bool boss_spawned;
     bool boss_defeated;

@@ -13,7 +13,8 @@ typedef enum AttackEmitterType
     ATTACK_EMITTER_FAN,
     ATTACK_EMITTER_RING,
     ATTACK_EMITTER_CURTAIN,
-    ATTACK_EMITTER_SPIRAL_BURST
+    ATTACK_EMITTER_SPIRAL_BURST,
+    ATTACK_EMITTER_VERTICAL_LASER
 } AttackEmitterType;
 
 typedef struct AttackEmitterDef
@@ -25,6 +26,8 @@ typedef struct AttackEmitterDef
     float spread_or_width;
     float angle_scale;
     float radius;
+    float charge_time;
+    float active_time;
 } AttackEmitterDef;
 
 typedef struct AttackPatternDef
@@ -43,7 +46,9 @@ typedef enum EnemyArchetypeId
     ENEMY_ARCHETYPE_AIMER,
     ENEMY_ARCHETYPE_AIMER_HEAVY,
     ENEMY_ARCHETYPE_ORBITER,
-    ENEMY_ARCHETYPE_BOSS_CORE
+    ENEMY_ARCHETYPE_SENTINEL,
+    ENEMY_ARCHETYPE_BOSS_CORE,
+    ENEMY_ARCHETYPE_ARRAY_BOSS
 } EnemyArchetypeId;
 
 typedef struct EnemyArchetypeDef
@@ -86,8 +91,22 @@ typedef enum WaveId
     WAVE_ORBIT_PAIR,
     WAVE_MID_SWEEP_PRESSURE,
     WAVE_LATE_PINCH,
-    WAVE_BOSS_ENTRY
+    WAVE_BOSS_ENTRY,
+    WAVE_STAGE_TWO_OPEN_CROSS,
+    WAVE_STAGE_TWO_SENTINEL_PAIR,
+    WAVE_STAGE_TWO_SWEEP_LATTICE,
+    WAVE_STAGE_TWO_SENTINEL_WALL,
+    WAVE_STAGE_TWO_ORBIT_BREAK,
+    WAVE_STAGE_TWO_FINAL_PRESSURE,
+    WAVE_STAGE_TWO_BOSS_ENTRY
 } WaveId;
+
+typedef enum StageId
+{
+    STAGE_ONE = 0,
+    STAGE_TWO,
+    STAGE_NONE
+} StageId;
 
 typedef struct WaveDef
 {
@@ -105,12 +124,18 @@ typedef struct StageCue
 
 typedef struct StageDef
 {
+    StageId id;
+    StageId next_stage;
     const char *name;
+    const char *hud_label;
+    WaveId boss_wave;
     int cue_count;
     const StageCue *cues;
 } StageDef;
 
 const StageDef *StageGetDefault(void);
+const StageDef *StageGetById(StageId id);
+const StageDef *StageGetNext(const StageDef *stage);
 const WaveDef *StageGetWaveDefinition(WaveId id);
 const EnemyArchetypeDef *StageGetEnemyArchetype(EnemyArchetypeId id);
 const AttackPatternDef *StageGetAttackPattern(AttackPatternId id);

@@ -41,6 +41,10 @@ static const char *AudioSfxFile(AudioSfx sfx)
         return "boss_alert.wav";
     case AUDIO_SFX_STAGE_CLEAR:
         return "stage_clear.wav";
+    case AUDIO_SFX_LASER_CHARGE:
+        return "laser_charge.wav";
+    case AUDIO_SFX_LASER_FIRE:
+        return "laser_fire.wav";
     case AUDIO_SFX_COUNT:
         break;
     }
@@ -70,6 +74,10 @@ static float AudioSfxVolume(AudioSfx sfx)
         return 0.5f;
     case AUDIO_SFX_STAGE_CLEAR:
         return 0.55f;
+    case AUDIO_SFX_LASER_CHARGE:
+        return 0.42f;
+    case AUDIO_SFX_LASER_FIRE:
+        return 0.5f;
     case AUDIO_SFX_COUNT:
         break;
     }
