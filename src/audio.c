@@ -10,6 +10,11 @@ typedef struct AudioState
 {
     bool initialized;
     Sound sounds[AUDIO_SFX_COUNT];
+    bool sounds_loaded[AUDIO_SFX_COUNT];
+    Music music[AUDIO_MUSIC_COUNT];
+    bool music_loaded[AUDIO_MUSIC_COUNT];
+    AudioMusic current_music;
+    bool music_playing;
 } AudioState;
 
 static AudioState g_audio = {0};
@@ -70,6 +75,40 @@ static float AudioSfxVolume(AudioSfx sfx)
     }
 
     return 0.5f;
+}
+
+static const char *AudioMusicFile(AudioMusic music)
+{
+    switch (music)
+    {
+    case AUDIO_MUSIC_TITLE:
+        return "title.ogg";
+    case AUDIO_MUSIC_STAGE:
+        return "stage.ogg";
+    case AUDIO_MUSIC_BOSS:
+        return "boss.ogg";
+    case AUDIO_MUSIC_COUNT:
+        break;
+    }
+
+    return "";
+}
+
+static float AudioMusicVolume(AudioMusic music)
+{
+    switch (music)
+    {
+    case AUDIO_MUSIC_TITLE:
+        return 0.55f;
+    case AUDIO_MUSIC_STAGE:
+        return 0.65f;
+    case AUDIO_MUSIC_BOSS:
+        return 0.68f;
+    case AUDIO_MUSIC_COUNT:
+        break;
+    }
+
+    return 0.6f;
 }
 
 static bool AudioFileExists(const char *path)
@@ -135,10 +174,28 @@ bool AudioInit(void)
         }
 
         g_audio.sounds[i] = LoadSound(path);
+        g_audio.sounds_loaded[i] = true;
         SetSoundVolume(g_audio.sounds[i], AudioSfxVolume((AudioSfx)i));
     }
 
+    for (int i = 0; i < AUDIO_MUSIC_COUNT; ++i)
+    {
+        const char *path = TextFormat("%s/music/%s", asset_root, AudioMusicFile((AudioMusic)i));
+
+        if (!AudioFileExists(path))
+        {
+            TraceLog(LOG_WARNING, "AUDIO: missing music file: %s", path);
+            continue;
+        }
+
+        g_audio.music[i] = LoadMusicStream(path);
+        g_audio.music_loaded[i] = true;
+        SetMusicVolume(g_audio.music[i], AudioMusicVolume((AudioMusic)i));
+    }
+
     SetMasterVolume(0.85f);
+    g_audio.current_music = AUDIO_MUSIC_COUNT;
+    g_audio.music_playing = false;
     g_audio.initialized = true;
     return true;
 }
@@ -152,9 +209,17 @@ void AudioShutdown(void)
 
     for (int i = 0; i < AUDIO_SFX_COUNT; ++i)
     {
-        if (IsSoundValid(g_audio.sounds[i]))
+        if (g_audio.sounds_loaded[i])
         {
             UnloadSound(g_audio.sounds[i]);
+        }
+    }
+
+    for (int i = 0; i < AUDIO_MUSIC_COUNT; ++i)
+    {
+        if (g_audio.music_loaded[i])
+        {
+            UnloadMusicStream(g_audio.music[i]);
         }
     }
 
@@ -169,8 +234,36 @@ void AudioPlaySfx(AudioSfx sfx)
         return;
     }
 
-    if (IsSoundValid(g_audio.sounds[sfx]))
+    if (g_audio.sounds_loaded[sfx])
     {
         PlaySound(g_audio.sounds[sfx]);
     }
+}
+
+void AudioUpdateMusic(AudioMusic music)
+{
+    if (!g_audio.initialized || music < 0 || music >= AUDIO_MUSIC_COUNT)
+    {
+        return;
+    }
+
+    if (!g_audio.music_loaded[music])
+    {
+        return;
+    }
+
+    if (!g_audio.music_playing || g_audio.current_music != music)
+    {
+        if (g_audio.music_playing && g_audio.current_music < AUDIO_MUSIC_COUNT &&
+            g_audio.music_loaded[g_audio.current_music])
+        {
+            StopMusicStream(g_audio.music[g_audio.current_music]);
+        }
+
+        g_audio.current_music = music;
+        g_audio.music_playing = true;
+        PlayMusicStream(g_audio.music[g_audio.current_music]);
+    }
+
+    UpdateMusicStream(g_audio.music[g_audio.current_music]);
 }

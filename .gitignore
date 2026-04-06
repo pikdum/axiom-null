@@ -1,5 +1,6 @@
 build/
 compile_commands.json
 assets/scifi_sfx_pack/
+assets/music_pack/
 result
 result-*

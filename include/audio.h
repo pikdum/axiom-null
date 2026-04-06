@@ -17,8 +17,17 @@ typedef enum AudioSfx
     AUDIO_SFX_COUNT
 } AudioSfx;
 
+typedef enum AudioMusic
+{
+    AUDIO_MUSIC_TITLE = 0,
+    AUDIO_MUSIC_STAGE,
+    AUDIO_MUSIC_BOSS,
+    AUDIO_MUSIC_COUNT
+} AudioMusic;
+
 bool AudioInit(void);
 void AudioShutdown(void);
 void AudioPlaySfx(AudioSfx sfx);
+void AudioUpdateMusic(AudioMusic music);
 
 #endif
