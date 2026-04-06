@@ -580,7 +580,6 @@ static void EmitSpiralBurst(Game *game, Vector2 position, float speed, int count
         float angle = phase_clock * angle_scale + ((float)i * TAU / (float)count);
 
         SpawnEnemyBullet(game, kind, position, ToVector(LogicPolar(angle, speed)), radius);
-        SpawnEnemyBullet(game, kind, position, ToVector(LogicPolar(-angle, speed)), radius);
     }
 }
 
@@ -1259,13 +1258,6 @@ static void UpdateEnemyBullets(Game *game, float dt)
         bullet->age += dt;
         bullet->position.x += bullet->velocity.x * dt;
         bullet->position.y += bullet->velocity.y * dt;
-
-        if (bullet->kind == BULLET_SPIRAL)
-        {
-            float angle = atan2f(bullet->velocity.y, bullet->velocity.x) + 0.7f * dt;
-            float speed = LogicLength(ToLogic(bullet->velocity));
-            bullet->velocity = ToVector(LogicPolar(angle, speed));
-        }
 
         if (!IsInsideExtendedPlayfield(bullet->position, 40.0f))
         {
